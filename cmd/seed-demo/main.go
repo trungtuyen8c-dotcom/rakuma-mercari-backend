@@ -23,9 +23,9 @@ type demo struct {
 	Products []string `json:"products"`
 	Periods  []struct {
 		ID, Label, Start, End, Status string
-		OpeningCost, OpeningRevenue    int64
-		ClosingCost, ClosingRevenue    *int64
-		ClosedAt                       *string
+		OpeningCost, OpeningRevenue   int64
+		ClosingCost, ClosingRevenue   *int64
+		ClosedAt                      *string
 	} `json:"periods"`
 	Openings  map[string]map[string]int `json:"openings"`
 	Purchases []struct {
