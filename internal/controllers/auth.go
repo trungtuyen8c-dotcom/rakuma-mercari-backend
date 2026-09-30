@@ -31,7 +31,11 @@ func (h *AuthHandlers) oauth() *oauth2.Config {
 
 // Config tells the UI which sign-in methods exist.
 func (h *AuthHandlers) Config(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"google": h.Svc.Cfg.GoogleEnabled(), "devLogin": h.Svc.Cfg.DevLoginEnabled()})
+	c.JSON(http.StatusOK, gin.H{
+		"google":   h.Svc.Cfg.GoogleEnabled(),
+		"password": h.Svc.PasswordEnabled(c.Request.Context()),
+		"devLogin": h.Svc.Cfg.DevLoginEnabled(),
+	})
 }
 
 func (h *AuthHandlers) Me(c *gin.Context) {
@@ -54,6 +58,41 @@ func (h *AuthHandlers) Logout(c *gin.Context) {
 	}
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(middlewares.SessionCookie, "", -1, "/", "", h.Svc.Cfg.SecureCookies(), true)
+	c.Status(http.StatusNoContent)
+}
+
+// Login signs the owner in with email + password.
+func (h *AuthHandlers) Login(c *gin.Context) {
+	var in struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if !bind(c, &in) {
+		return
+	}
+	tok, err := h.Svc.PasswordLogin(c.Request.Context(), c.ClientIP(), in.Email, in.Password)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	h.setSession(c, tok)
+	u, _ := h.Svc.SessionUser(c.Request.Context(), tok)
+	c.JSON(http.StatusOK, u)
+}
+
+// ChangePassword lets the signed-in owner set a new password (current password required once one exists).
+func (h *AuthHandlers) ChangePassword(c *gin.Context) {
+	var in struct {
+		Current string `json:"current"`
+		Next    string `json:"next"`
+	}
+	if !bind(c, &in) {
+		return
+	}
+	if err := h.Svc.ChangePassword(c.Request.Context(), middlewares.GetPrincipal(c).Actor, in.Current, in.Next); err != nil {
+		fail(c, err)
+		return
+	}
 	c.Status(http.StatusNoContent)
 }
 

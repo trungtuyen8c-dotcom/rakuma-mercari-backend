@@ -18,6 +18,10 @@ import (
 func New(svc *service.Service) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery(), gin.Logger())
+	// Only nginx (on the private Docker network) talks to the API; it sets X-Real-IP to the real client address,
+	// so the login lockout cannot be dodged with a forged X-Forwarded-For.
+	r.RemoteIPHeaders = []string{"X-Real-IP"}
+	_ = r.SetTrustedProxies([]string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.1", "::1"})
 	r.GET("/healthz", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
 
 	h := &controllers.Handlers{Svc: svc}
@@ -30,6 +34,7 @@ func New(svc *service.Service) *gin.Engine {
 	auth.GET("/me", a.Me)
 	auth.POST("/logout", a.Logout)
 	auth.POST("/dev-login", a.DevLogin)
+	auth.POST("/login", a.Login)
 	auth.GET("/google/login", a.GoogleLogin)
 	auth.GET("/google/callback", a.GoogleCallback)
 
@@ -49,6 +54,7 @@ func New(svc *service.Service) *gin.Engine {
 
 	owner := api.Group("", middlewares.RequireOwner())
 	owner.GET("/state", h.State)
+	owner.PUT("/auth/password", a.ChangePassword)
 	owner.PATCH("/products/:id", h.UpdateProduct)
 	owner.DELETE("/products/:id", h.DeleteProduct)
 	owner.PATCH("/purchases/:id", h.UpdatePurchase)

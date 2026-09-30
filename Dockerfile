@@ -5,7 +5,8 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server \
  && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/import-excel ./cmd/import-excel \
- && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/seed-demo ./cmd/seed-demo
+ && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/seed-demo ./cmd/seed-demo \
+ && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/set-password ./cmd/set-password
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates tzdata && adduser -D -u 10001 app
