@@ -1,0 +1,5 @@
+/bin/
+*.xlsx
+.env
+.env.*
+!.env.example
