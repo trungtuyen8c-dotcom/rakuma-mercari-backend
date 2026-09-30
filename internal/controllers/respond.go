@@ -21,6 +21,7 @@ func fail(c *gin.Context, err error) {
 	var we *service.WarningError
 	var ce *service.ConflictError
 	var fe *service.ForbiddenError
+	var ae *service.AuthError
 	var pe *pgconn.PgError
 	switch {
 	case errors.As(err, &ve):
@@ -33,6 +34,8 @@ func fail(c *gin.Context, err error) {
 		c.JSON(http.StatusConflict, gin.H{"warnings": we.Warnings})
 	case errors.As(err, &ce):
 		c.JSON(http.StatusConflict, gin.H{"error": ce.Msg})
+	case errors.As(err, &ae):
+		c.JSON(ae.Status, gin.H{"error": ae.Msg})
 	case errors.As(err, &fe):
 		c.JSON(http.StatusForbidden, gin.H{"error": fe.Msg})
 	case errors.Is(err, service.ErrForbidden):
