@@ -497,3 +497,76 @@ func (h *Handlers) OpenNextPeriod(c *gin.Context) {
 	}
 	c.JSON(http.StatusCreated, out)
 }
+
+func (h *Handlers) EditPurchase(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	var in service.PurchaseInput
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.UpdatePurchase(c.Request.Context(), actor(c), id, in, force(c))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func (h *Handlers) EditSale(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	var in service.SaleInput
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.UpdateSale(c.Request.Context(), actor(c), id, in, force(c))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func (h *Handlers) SetStock(c *gin.Context) {
+	id, ok := idParam(c, "product_id")
+	if !ok {
+		return
+	}
+	var in struct {
+		Qty service.Flex `json:"qty"`
+	}
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.SetStock(c.Request.Context(), actor(c), periodQuery(c), id, in.Qty)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func (h *Handlers) SetPeriodTotals(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	var in struct {
+		TotalCost    service.Flex `json:"totalCost"`
+		TotalRevenue service.Flex `json:"totalRevenue"`
+	}
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.SetPeriodTotals(c.Request.Context(), actor(c), id, in.TotalCost, in.TotalRevenue)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}

@@ -99,7 +99,7 @@ func validRakumaOrder(in RakumaOrderInput) (repo.RakumaRow, map[string]string) {
 }
 
 // SyncRakuma upserts a batch of scraped orders atomically. A new tracking number is copied onto the purchase the
-// order was approved into, unless that purchase is in a closed period.
+// order was approved into.
 func (s *Service) SyncRakuma(ctx context.Context, actor string, orders []RakumaOrderInput) (RakumaSyncResult, error) {
 	var res RakumaSyncResult
 	rows := make([]repo.RakumaRow, len(orders))
@@ -146,7 +146,7 @@ func (s *Service) SyncRakuma(ctx context.Context, actor string, orders []RakumaO
 			if err != nil {
 				return err
 			}
-			if before.Locked || before.Tracking == o.Tracking {
+			if before.Tracking == o.Tracking {
 				continue
 			}
 			if err := repo.SetPurchaseTracking(ctx, tx, pid, o.Tracking); err != nil {
@@ -220,7 +220,7 @@ func (s *Service) updateRakuma(ctx context.Context, actor string, id int64, acti
 var ratings = map[string]bool{"": true, "GOOD": true, "NORMAL": true, "BAD": true}
 
 // UpdateRakumaNotes sets the seller rating and/or the owner's issue note. Rating a seller also ticks "Đã đánh giá"
-// on the purchase the order became, unless that purchase is in a closed period.
+// on the purchase the order became.
 func (s *Service) UpdateRakumaNotes(ctx context.Context, actor string, id int64, rating, issueNote *string) (models.RakumaOrder, error) {
 	if rating != nil && !ratings[*rating] {
 		return models.RakumaOrder{}, &ValidationError{Fields: map[string]string{"rating": "Đánh giá phải là Tốt, Bình thường hoặc Không tốt."}}
@@ -241,7 +241,7 @@ func (s *Service) UpdateRakumaNotes(ctx context.Context, actor string, id int64,
 		}
 		pid, _ := parseID(*o.PurchaseID)
 		p, err := repo.GetPurchase(ctx, tx, pid)
-		if err != nil || p.Locked || p.Reviewed {
+		if err != nil || p.Reviewed {
 			return err
 		}
 		if err := repo.SetPurchaseFlags(ctx, tx, pid, p.Checked, true); err != nil {

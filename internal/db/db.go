@@ -12,7 +12,14 @@ import (
 )
 
 func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(ctx, url)
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		return nil, err
+	}
+	// The chained stock/totals views (migration 0006) get high cost estimates; JIT compiling them costs ~0.4s per
+	// query while running them takes milliseconds.
+	cfg.ConnConfig.RuntimeParams["jit"] = "off"
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}

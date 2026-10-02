@@ -115,3 +115,59 @@ func TestOpenNextPeriodWithCutOff(t *testing.T) {
 	}
 	e.ok("PATCH", "/api/v1/purchases/"+id, map[string]any{"tracking": "bad no!"}, 422)
 }
+
+// One edit anywhere flows into every later figure: row edits, stock counts and total corrections.
+func TestEditsFlowIntoLaterPeriods(t *testing.T) {
+	e := setup(t)
+	pid := e.product("ninja")
+	pur := e.ok("POST", "/api/v1/purchases", purchase(pid, 1000, 5, 0, nil), 201)["id"].(string)
+	sale := e.ok("POST", "/api/v1/sales", map[string]any{"productId": pid, "qty": 2, "price": 3000, "customer": "A"}, 201)["id"].(string)
+	sep := e.ok("GET", "/api/v1/periods", nil, 200)["_"].([]any)[0].(map[string]any)["id"].(string)
+	oct := e.ok("POST", "/api/v1/periods/close", nil, 200)["id"].(string)
+	nov := e.ok("POST", "/api/v1/periods/close", nil, 200)["id"].(string)
+	totals := func(id string) map[string]any {
+		return e.ok("GET", "/api/v1/dashboard?period_id="+id, nil, 200)["totals"].(map[string]any)
+	}
+	stock := func(id string) map[string]any {
+		for _, r := range e.ok("GET", "/api/v1/stock?period_id="+id, nil, 200)["rows"].([]any) {
+			if r.(map[string]any)["productId"] == pid {
+				return r.(map[string]any)
+			}
+		}
+		t.Fatal("no row")
+		return nil
+	}
+
+	// Edit the September purchase (closed period): price and qty
+	p := e.ok("PUT", "/api/v1/purchases/"+pur, purchase(pid, 1200, 6, 0, nil), 200)
+	if num(p["total"]) != 7200 || p["periodId"] != sep {
+		t.Fatalf("edited purchase: %v", p)
+	}
+	// Edit the sale: qty 3 at 3000
+	e.ok("PUT", "/api/v1/sales/"+sale, map[string]any{"productId": pid, "qty": 3, "price": 3000, "customer": "B"}, 200)
+	if tt := totals(nov); num(tt["totalCost"]) != 7200 || num(tt["totalRevenue"]) != 9000 || num(tt["stockTotal"]) != 3 {
+		t.Fatalf("november after row edits: %v", tt)
+	}
+
+	// Stock count in October: only 1 left
+	res := e.do("PUT", "/api/v1/stock/"+pid+"/current?period_id="+oct, map[string]any{"qty": 1}, "")
+	if res.Code != 200 {
+		t.Fatalf("set stock: %d %s", res.Code, res.Body)
+	}
+	if r := stock(oct); num(r["current"]) != 1 || num(r["adjust"]) != -2 {
+		t.Fatalf("october stock: %v", r)
+	}
+	if r := stock(nov); num(r["opening"]) != 1 || num(r["current"]) != 1 {
+		t.Fatalf("november follows october stock: %v", r)
+	}
+
+	// Correct October's total revenue directly; November and profit follow
+	e.ok("PUT", "/api/v1/periods/"+oct+"/totals", map[string]any{"totalRevenue": 10000}, 200)
+	if tt := totals(oct); num(tt["totalRevenue"]) != 10000 || num(tt["totalCost"]) != 7200 {
+		t.Fatalf("october totals: %v", tt)
+	}
+	if tt := totals(nov); num(tt["prevRevenue"]) != 10000 || num(tt["totalProfit"]) != 2800 {
+		t.Fatalf("november totals: %v", tt)
+	}
+	e.ok("PUT", "/api/v1/periods/"+oct+"/totals", map[string]any{"totalCost": -1}, 422)
+}
