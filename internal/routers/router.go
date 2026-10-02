@@ -53,6 +53,7 @@ func New(svc *service.Service) *gin.Engine {
 	write.POST("/purchases", h.CreatePurchase)
 	write.POST("/sales", h.CreateSale)
 	write.POST("/rakuma/sync", h.SyncRakuma)
+	write.POST("/rakuma/replies/:id/sent", h.MarkRakumaReplySent)
 
 	owner := api.Group("", middlewares.RequireOwner())
 	owner.GET("/state", h.State)
@@ -72,6 +73,9 @@ func New(svc *service.Service) *gin.Engine {
 	owner.POST("/rakuma/orders/:id/approve", h.ApproveRakuma)
 	owner.POST("/rakuma/orders/:id/dismiss", h.DismissRakuma)
 	owner.POST("/rakuma/orders/:id/messages-handled", h.HandleRakumaMessages)
+	owner.PATCH("/rakuma/orders/:id", h.UpdateRakuma)
+	owner.POST("/rakuma/orders/:id/replies", h.AddRakumaReply)
+	owner.DELETE("/rakuma/replies/:id", h.DeleteRakumaReply)
 
 	return r
 }

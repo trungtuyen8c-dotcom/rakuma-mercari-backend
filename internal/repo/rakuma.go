@@ -9,9 +9,9 @@ import (
 )
 
 const rakumaSelect = `
-SELECT o.id, o.order_no, o.item_url, o.title, o.status, COALESCE(to_char(o.order_date, 'YYYY-MM-DD'), ''),
+SELECT o.id, o.order_no, o.item_url, o.title, o.image_url, o.status, COALESCE(to_char(o.order_date, 'YYYY-MM-DD'), ''),
        o.price, o.discount, o.carrier, COALESCE(o.tracking_no, ''), o.seller, o.summary, o.reply_draft,
-       o.purchase_id::text, o.is_dismissed,
+       o.rating, o.issue_note, o.purchase_id::text, o.is_dismissed,
        (SELECT COUNT(*) FROM rakuma_messages m WHERE m.order_id = o.id AND m.sender = 'seller'
           AND (o.messages_handled_at IS NULL OR m.created_at > o.messages_handled_at))::int,
        to_char(o.synced_at AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI')
@@ -19,12 +19,12 @@ FROM rakuma_orders o`
 
 func scanRakuma(row pgx.Row) (models.RakumaOrder, error) {
 	var o models.RakumaOrder
-	err := row.Scan(&o.ID, &o.OrderNo, &o.Link, &o.Title, &o.Status, &o.Date, &o.Price, &o.Discount, &o.Carrier,
-		&o.Tracking, &o.Seller, &o.Summary, &o.ReplyDraft, &o.PurchaseID, &o.Dismissed, &o.NewMessages, &o.SyncedAt)
+	err := row.Scan(&o.ID, &o.OrderNo, &o.Link, &o.Title, &o.Image, &o.Status, &o.Date, &o.Price, &o.Discount, &o.Carrier,
+		&o.Tracking, &o.Seller, &o.Summary, &o.ReplyDraft, &o.Rating, &o.IssueNote, &o.PurchaseID, &o.Dismissed, &o.NewMessages, &o.SyncedAt)
 	return o, err
 }
 
-// ListRakumaOrders returns orders newest first, each with its messages in arrival order.
+// ListRakumaOrders returns orders newest first, each with its messages and replies in arrival order.
 func ListRakumaOrders(ctx context.Context, db DB) ([]models.RakumaOrder, error) {
 	rows, err := db.Query(ctx, rakumaSelect+` ORDER BY o.order_date DESC NULLS FIRST, o.id DESC`)
 	if err != nil {
@@ -38,13 +38,24 @@ func ListRakumaOrders(ctx context.Context, db DB) ([]models.RakumaOrder, error) 
 	if err != nil {
 		return nil, err
 	}
+	replies, err := rakumaReplies(ctx, db, 0)
+	if err != nil {
+		return nil, err
+	}
 	for i := range orders {
-		orders[i].Messages = msgs[orders[i].ID]
-		if orders[i].Messages == nil {
-			orders[i].Messages = []models.RakumaMessage{}
-		}
+		fillThread(&orders[i], msgs, replies)
 	}
 	return orders, nil
+}
+
+func fillThread(o *models.RakumaOrder, msgs map[int64][]models.RakumaMessage, replies map[int64][]models.RakumaReply) {
+	o.Messages, o.Replies = msgs[o.ID], replies[o.ID]
+	if o.Messages == nil {
+		o.Messages = []models.RakumaMessage{}
+	}
+	if o.Replies == nil {
+		o.Replies = []models.RakumaReply{}
+	}
 }
 
 func GetRakumaOrder(ctx context.Context, db DB, id int64) (models.RakumaOrder, error) {
@@ -53,11 +64,38 @@ func GetRakumaOrder(ctx context.Context, db DB, id int64) (models.RakumaOrder, e
 		return o, err
 	}
 	msgs, err := rakumaMessages(ctx, db, id)
-	o.Messages = msgs[id]
-	if o.Messages == nil {
-		o.Messages = []models.RakumaMessage{}
+	if err != nil {
+		return o, err
 	}
-	return o, err
+	replies, err := rakumaReplies(ctx, db, id)
+	if err != nil {
+		return o, err
+	}
+	fillThread(&o, msgs, replies)
+	return o, nil
+}
+
+// rakumaReplies groups the owner's replies by order; orderID 0 means all orders.
+func rakumaReplies(ctx context.Context, db DB, orderID int64) (map[int64][]models.RakumaReply, error) {
+	rows, err := db.Query(ctx, `
+		SELECT order_id, id, body_vi, body_ja, status,
+		       to_char(created_at AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI'),
+		       COALESCE(to_char(sent_at AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI'), '')
+		FROM rakuma_replies WHERE $1 = 0 OR order_id = $1 ORDER BY order_id, id`, orderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64][]models.RakumaReply{}
+	for rows.Next() {
+		var oid int64
+		var r models.RakumaReply
+		if err := rows.Scan(&oid, &r.ID, &r.BodyVi, &r.BodyJa, &r.Status, &r.CreatedAt, &r.SentAt); err != nil {
+			return nil, err
+		}
+		out[oid] = append(out[oid], r)
+	}
+	return out, rows.Err()
 }
 
 // rakumaMessages groups messages by order; orderID 0 means all orders.
@@ -88,6 +126,7 @@ type RakumaRow struct {
 	OrderNo    string
 	Link       string
 	Title      string
+	Image      string
 	Status     string
 	Date       *string
 	Price      int64
@@ -104,11 +143,12 @@ type RakumaRow struct {
 func UpsertRakumaOrder(ctx context.Context, db DB, r RakumaRow) (id int64, created bool, err error) {
 	err = db.QueryRow(ctx, `
 		INSERT INTO rakuma_orders (order_no, item_url, title, status, order_date, price, discount, carrier, tracking_no,
-		                           seller, summary, reply_draft)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		                           seller, summary, reply_draft, image_url)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		ON CONFLICT (order_no) DO UPDATE SET
 			item_url    = EXCLUDED.item_url,
 			title       = EXCLUDED.title,
+			image_url   = CASE WHEN EXCLUDED.image_url = '' THEN rakuma_orders.image_url ELSE EXCLUDED.image_url END,
 			status      = EXCLUDED.status,
 			order_date  = COALESCE(EXCLUDED.order_date, rakuma_orders.order_date),
 			price       = EXCLUDED.price,
@@ -122,7 +162,7 @@ func UpsertRakumaOrder(ctx context.Context, db DB, r RakumaRow) (id int64, creat
 			updated_at  = now()
 		RETURNING id, xmax = 0`,
 		r.OrderNo, r.Link, r.Title, r.Status, r.Date, r.Price, r.Discount, r.Carrier, r.Tracking, r.Seller, r.Summary,
-		r.ReplyDraft).Scan(&id, &created)
+		r.ReplyDraft, r.Image).Scan(&id, &created)
 	return
 }
 
@@ -151,5 +191,32 @@ func SetRakumaHandled(ctx context.Context, db DB, id int64) error {
 
 func SetPurchaseTracking(ctx context.Context, db DB, id int64, tracking string) error {
 	_, err := db.Exec(ctx, `UPDATE purchases SET tracking_no = $2, updated_at = now() WHERE id = $1`, id, tracking)
+	return err
+}
+
+func SetRakumaNotes(ctx context.Context, db DB, id int64, rating, issueNote string) error {
+	_, err := db.Exec(ctx, `UPDATE rakuma_orders SET rating = $2, issue_note = $3, updated_at = now() WHERE id = $1`, id, rating, issueNote)
+	return err
+}
+
+func InsertRakumaReply(ctx context.Context, db DB, orderID int64, bodyVi string) (int64, error) {
+	var id int64
+	err := db.QueryRow(ctx, `INSERT INTO rakuma_replies (order_id, body_vi) VALUES ($1, $2) RETURNING id`, orderID, bodyVi).Scan(&id)
+	return id, err
+}
+
+// ReplyOrder returns the reply's order id and status.
+func ReplyOrder(ctx context.Context, db DB, id int64) (orderID int64, status string, err error) {
+	err = db.QueryRow(ctx, `SELECT order_id, status FROM rakuma_replies WHERE id = $1`, id).Scan(&orderID, &status)
+	return
+}
+
+func MarkRakumaReplySent(ctx context.Context, db DB, id int64, bodyJa string) error {
+	_, err := db.Exec(ctx, `UPDATE rakuma_replies SET status = 'SENT', body_ja = $2, sent_at = now() WHERE id = $1`, id, bodyJa)
+	return err
+}
+
+func DeleteRakumaReply(ctx context.Context, db DB, id int64) error {
+	_, err := db.Exec(ctx, `DELETE FROM rakuma_replies WHERE id = $1`, id)
 	return err
 }

@@ -374,3 +374,74 @@ func (h *Handlers) HandleRakumaMessages(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, out)
 }
+
+func (h *Handlers) UpdateRakuma(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	var in struct {
+		Rating    *string `json:"rating"`
+		IssueNote *string `json:"issueNote"`
+	}
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.UpdateRakumaNotes(c.Request.Context(), actor(c), id, in.Rating, in.IssueNote)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func (h *Handlers) AddRakumaReply(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	var in struct {
+		Body string `json:"body"`
+	}
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.AddRakumaReply(c.Request.Context(), actor(c), id, in.Body)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, out)
+}
+
+func (h *Handlers) MarkRakumaReplySent(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	var in struct {
+		BodyJa string `json:"bodyJa"`
+	}
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.MarkRakumaReplySent(c.Request.Context(), actor(c), id, in.BodyJa)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func (h *Handlers) DeleteRakumaReply(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	out, err := h.Svc.DeleteRakumaReply(c.Request.Context(), actor(c), id)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}

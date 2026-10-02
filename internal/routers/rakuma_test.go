@@ -106,3 +106,61 @@ func TestRakumaDismissAndState(t *testing.T) {
 	}
 	e.ok("POST", "/api/v1/rakuma/orders/999/dismiss", map[string]any{"dismissed": true}, 404)
 }
+
+func TestRakumaRatingAndIssueNote(t *testing.T) {
+	e := setup(t)
+	pid := e.product("MEGA 30th")
+	id := e.sync("", rakumaOrder("A1", map[string]any{"image": "https://img.fril.jp/a.jpg"}))["_"].([]any)[0].(map[string]any)["id"].(string)
+	e.ok("POST", "/api/v1/rakuma/orders/"+id+"/approve", purchase(pid, 18000, 1, 900, nil), 201)
+
+	out := e.ok("PATCH", "/api/v1/rakuma/orders/"+id, map[string]any{"issueNote": "  Hộp bị móp, đã nhắn shop  "}, 200)
+	if out["issueNote"] != "Hộp bị móp, đã nhắn shop" || out["image"] != "https://img.fril.jp/a.jpg" {
+		t.Fatalf("issue note: %v", out)
+	}
+	// Rating keeps the note and ticks "reviewed" on the linked purchase
+	out = e.ok("PATCH", "/api/v1/rakuma/orders/"+id, map[string]any{"rating": "GOOD"}, 200)
+	if out["rating"] != "GOOD" || out["issueNote"] != "Hộp bị móp, đã nhắn shop" {
+		t.Fatalf("rating: %v", out)
+	}
+	if p := e.ok("GET", "/api/v1/purchases", nil, 200)["_"].([]any)[0].(map[string]any); p["reviewed"] != true {
+		t.Fatalf("purchase not reviewed: %v", p)
+	}
+	e.ok("PATCH", "/api/v1/rakuma/orders/"+id, map[string]any{"rating": "SUPER"}, 422)
+}
+
+func TestRakumaRepliesFlow(t *testing.T) {
+	e := setup(t)
+	write := e.ok("POST", "/api/v1/api-keys", map[string]string{"name": "claude", "scope": "write"}, 201)["key"].(string)
+	id := e.sync(write, rakumaOrder("A1", nil))["_"].([]any)[0].(map[string]any)["id"].(string)
+
+	e.ok("POST", "/api/v1/rakuma/orders/"+id+"/replies", map[string]any{"body": " "}, 422)
+	out := e.ok("POST", "/api/v1/rakuma/orders/"+id+"/replies", map[string]any{"body": "Cảm ơn, mình chờ hàng nhé"}, 201)
+	r := out["replies"].([]any)[0].(map[string]any)
+	if r["status"] != "PENDING" || r["bodyVi"] != "Cảm ơn, mình chờ hàng nhé" {
+		t.Fatalf("reply: %v", r)
+	}
+	rid := r["id"].(string)
+
+	// Only the owner writes replies; Claude's write key marks them sent, once
+	if res := e.do("POST", "/api/v1/rakuma/orders/"+id+"/replies", map[string]any{"body": "x"}, write); res.Code != 403 {
+		t.Fatalf("write key reply: %d", res.Code)
+	}
+	if res := e.do("POST", "/api/v1/rakuma/replies/"+rid+"/sent", map[string]any{"bodyJa": "ありがとうございます。"}, write); res.Code != 200 {
+		t.Fatalf("mark sent: %d %s", res.Code, res.Body)
+	}
+	if res := e.do("POST", "/api/v1/rakuma/replies/"+rid+"/sent", map[string]any{"bodyJa": "again"}, write); res.Code != 409 {
+		t.Fatalf("second send: %d", res.Code)
+	}
+	e.ok("DELETE", "/api/v1/rakuma/replies/"+rid, nil, 409)
+	got := e.ok("GET", "/api/v1/rakuma/orders", nil, 200)["_"].([]any)[0].(map[string]any)["replies"].([]any)[0].(map[string]any)
+	if got["status"] != "SENT" || got["bodyJa"] != "ありがとうございます。" || got["sentAt"] == "" {
+		t.Fatalf("sent reply: %v", got)
+	}
+
+	// A pending reply can be cancelled
+	rid2 := e.ok("POST", "/api/v1/rakuma/orders/"+id+"/replies", map[string]any{"body": "Hủy tin này"}, 201)["replies"].([]any)[1].(map[string]any)["id"].(string)
+	if out := e.ok("DELETE", "/api/v1/rakuma/replies/"+rid2, nil, 200); len(out["replies"].([]any)) != 1 {
+		t.Fatalf("delete reply: %v", out)
+	}
+	e.ok("DELETE", "/api/v1/rakuma/replies/999", nil, 404)
+}

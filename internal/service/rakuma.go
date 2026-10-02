@@ -22,6 +22,7 @@ type RakumaOrderInput struct {
 	OrderNo    string               `json:"orderNo"`
 	Link       string               `json:"link"`
 	Title      string               `json:"title"`
+	Image      string               `json:"image"`
 	Status     string               `json:"status"`
 	Date       string               `json:"date"`
 	Price      Flex                 `json:"price"`
@@ -56,6 +57,9 @@ func validRakumaOrder(in RakumaOrderInput) (repo.RakumaRow, map[string]string) {
 	}
 	if r.Title == "" {
 		e["title"] = "Thiếu tên món."
+	}
+	if r.Image = strings.TrimSpace(in.Image); r.Image != "" && !reLink.MatchString(r.Image) {
+		e["image"] = "Link ảnh phải bắt đầu bằng http:// hoặc https://"
 	}
 	price, ok := in.Price.int()
 	if !ok || price <= 0 {
@@ -186,21 +190,21 @@ func (s *Service) ApproveRakuma(ctx context.Context, actor string, id int64, in 
 }
 
 func (s *Service) DismissRakuma(ctx context.Context, actor string, id int64, dismissed bool) (models.RakumaOrder, error) {
-	return s.updateRakuma(ctx, actor, id, "dismiss", func(tx pgx.Tx) error { return repo.SetRakumaDismissed(ctx, tx, id, dismissed) })
+	return s.updateRakuma(ctx, actor, id, "dismiss", func(tx pgx.Tx, _ models.RakumaOrder) error { return repo.SetRakumaDismissed(ctx, tx, id, dismissed) })
 }
 
 func (s *Service) HandleRakumaMessages(ctx context.Context, actor string, id int64) (models.RakumaOrder, error) {
-	return s.updateRakuma(ctx, actor, id, "messages_handled", func(tx pgx.Tx) error { return repo.SetRakumaHandled(ctx, tx, id) })
+	return s.updateRakuma(ctx, actor, id, "messages_handled", func(tx pgx.Tx, _ models.RakumaOrder) error { return repo.SetRakumaHandled(ctx, tx, id) })
 }
 
-func (s *Service) updateRakuma(ctx context.Context, actor string, id int64, action string, fn func(pgx.Tx) error) (models.RakumaOrder, error) {
+func (s *Service) updateRakuma(ctx context.Context, actor string, id int64, action string, fn func(pgx.Tx, models.RakumaOrder) error) (models.RakumaOrder, error) {
 	var out models.RakumaOrder
 	err := s.tx(ctx, func(tx pgx.Tx) error {
 		before, err := repo.GetRakumaOrder(ctx, tx, id)
 		if err != nil {
 			return notFound(err)
 		}
-		if err := fn(tx); err != nil {
+		if err := fn(tx, before); err != nil {
 			return err
 		}
 		if out, err = repo.GetRakumaOrder(ctx, tx, id); err != nil {
@@ -209,4 +213,83 @@ func (s *Service) updateRakuma(ctx context.Context, actor string, id int64, acti
 		return repo.Audit(ctx, tx, "rakuma_order", id, action, actor, before, out)
 	})
 	return out, err
+}
+
+var ratings = map[string]bool{"": true, "GOOD": true, "NORMAL": true, "BAD": true}
+
+// UpdateRakumaNotes sets the seller rating and/or the owner's issue note. Rating a seller also ticks "Đã đánh giá"
+// on the purchase the order became, unless that purchase is in a closed period.
+func (s *Service) UpdateRakumaNotes(ctx context.Context, actor string, id int64, rating, issueNote *string) (models.RakumaOrder, error) {
+	if rating != nil && !ratings[*rating] {
+		return models.RakumaOrder{}, &ValidationError{Fields: map[string]string{"rating": "Đánh giá phải là Tốt, Bình thường hoặc Không tốt."}}
+	}
+	return s.updateRakuma(ctx, actor, id, "update", func(tx pgx.Tx, o models.RakumaOrder) error {
+		r, note := o.Rating, o.IssueNote
+		if rating != nil {
+			r = *rating
+		}
+		if issueNote != nil {
+			note = strings.TrimSpace(*issueNote)
+		}
+		if err := repo.SetRakumaNotes(ctx, tx, id, r, note); err != nil {
+			return err
+		}
+		if r == "" || o.PurchaseID == nil {
+			return nil
+		}
+		pid, _ := parseID(*o.PurchaseID)
+		p, err := repo.GetPurchase(ctx, tx, pid)
+		if err != nil || p.Locked || p.Reviewed {
+			return err
+		}
+		if err := repo.SetPurchaseFlags(ctx, tx, pid, p.Checked, true); err != nil {
+			return err
+		}
+		after, err := repo.GetPurchase(ctx, tx, pid)
+		if err != nil {
+			return err
+		}
+		return repo.Audit(ctx, tx, "purchase", pid, "update", actor, p, after)
+	})
+}
+
+// AddRakumaReply queues a reply the owner wrote in Vietnamese; Claude translates and posts it on the next sync.
+func (s *Service) AddRakumaReply(ctx context.Context, actor string, id int64, body string) (models.RakumaOrder, error) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return models.RakumaOrder{}, &ValidationError{Fields: map[string]string{"body": "Nhập nội dung trả lời."}}
+	}
+	return s.updateRakuma(ctx, actor, id, "reply", func(tx pgx.Tx, _ models.RakumaOrder) error {
+		_, err := repo.InsertRakumaReply(ctx, tx, id, body)
+		return err
+	})
+}
+
+// MarkRakumaReplySent records the Japanese text Claude posted for a pending reply.
+func (s *Service) MarkRakumaReplySent(ctx context.Context, actor string, replyID int64, bodyJa string) (models.RakumaOrder, error) {
+	bodyJa = strings.TrimSpace(bodyJa)
+	if bodyJa == "" {
+		return models.RakumaOrder{}, &ValidationError{Fields: map[string]string{"bodyJa": "Thiếu nội dung tiếng Nhật đã gửi."}}
+	}
+	return s.updateReply(ctx, actor, replyID, "reply_sent", func(tx pgx.Tx) error { return repo.MarkRakumaReplySent(ctx, tx, replyID, bodyJa) })
+}
+
+// DeleteRakumaReply cancels a reply that has not been sent yet.
+func (s *Service) DeleteRakumaReply(ctx context.Context, actor string, replyID int64) (models.RakumaOrder, error) {
+	return s.updateReply(ctx, actor, replyID, "reply_delete", func(tx pgx.Tx) error { return repo.DeleteRakumaReply(ctx, tx, replyID) })
+}
+
+func (s *Service) updateReply(ctx context.Context, actor string, replyID int64, action string, fn func(pgx.Tx) error) (models.RakumaOrder, error) {
+	orderID, _, err := repo.ReplyOrder(ctx, s.Pool, replyID)
+	if err != nil {
+		return models.RakumaOrder{}, notFound(err)
+	}
+	return s.updateRakuma(ctx, actor, orderID, action, func(tx pgx.Tx, _ models.RakumaOrder) error {
+		if _, status, err := repo.ReplyOrder(ctx, tx, replyID); err != nil {
+			return notFound(err)
+		} else if status != "PENDING" {
+			return &ConflictError{Msg: "Tin trả lời này đã được gửi."}
+		}
+		return fn(tx)
+	})
 }

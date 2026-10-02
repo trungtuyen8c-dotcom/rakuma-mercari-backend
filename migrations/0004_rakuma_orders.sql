@@ -6,6 +6,7 @@ CREATE TABLE rakuma_orders (
     order_no            TEXT NOT NULL,
     item_url            TEXT NOT NULL,
     title               TEXT NOT NULL,
+    image_url           TEXT NOT NULL DEFAULT '',
     status              TEXT NOT NULL DEFAULT '',
     order_date          DATE,
     price               BIGINT NOT NULL CHECK (price > 0),
@@ -15,6 +16,8 @@ CREATE TABLE rakuma_orders (
     seller              TEXT NOT NULL DEFAULT '',
     summary             TEXT NOT NULL DEFAULT '',
     reply_draft         TEXT NOT NULL DEFAULT '',
+    rating              TEXT NOT NULL DEFAULT '' CHECK (rating IN ('', 'GOOD', 'NORMAL', 'BAD')),
+    issue_note          TEXT NOT NULL DEFAULT '', -- the owner's open problem with this order; non-empty = needs attention
     purchase_id         BIGINT,
     is_dismissed        BOOLEAN NOT NULL DEFAULT FALSE,
     messages_handled_at TIMESTAMPTZ,
@@ -38,3 +41,17 @@ CREATE TABLE rakuma_messages (
     CONSTRAINT fk_rakuma_messages_rakuma_orders FOREIGN KEY (order_id) REFERENCES rakuma_orders (id) ON DELETE CASCADE
 );
 CREATE UNIQUE INDEX uniq_rakuma_messages_order_id_content ON rakuma_messages (order_id, sender, sent_at, md5(body));
+
+-- Replies the owner writes in Vietnamese. Claude translates each pending reply to Japanese, posts it in the Rakuma
+-- transaction chat, then marks it sent with the Japanese text it posted.
+CREATE TABLE rakuma_replies (
+    id         BIGSERIAL PRIMARY KEY,
+    order_id   BIGINT NOT NULL,
+    body_vi    TEXT NOT NULL,
+    body_ja    TEXT NOT NULL DEFAULT '',
+    status     TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'SENT')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    sent_at    TIMESTAMPTZ,
+    CONSTRAINT fk_rakuma_replies_rakuma_orders FOREIGN KEY (order_id) REFERENCES rakuma_orders (id) ON DELETE CASCADE
+);
+CREATE INDEX idx_rakuma_replies_order_id ON rakuma_replies (order_id);

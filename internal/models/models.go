@@ -171,6 +171,7 @@ type RakumaOrder struct {
 	OrderNo     string          `json:"orderNo"`
 	Link        string          `json:"link"`
 	Title       string          `json:"title"`
+	Image       string          `json:"image"`
 	Status      string          `json:"status"`
 	Date        string          `json:"date"`
 	Price       int64           `json:"price"`
@@ -180,9 +181,21 @@ type RakumaOrder struct {
 	Seller      string          `json:"seller"`
 	Summary     string          `json:"summary"`
 	ReplyDraft  string          `json:"replyDraft"`
+	Rating      string          `json:"rating"`    // "" | GOOD | NORMAL | BAD
+	IssueNote   string          `json:"issueNote"` // non-empty = open problem, shown highlighted
 	PurchaseID  *string         `json:"purchaseId"`
 	Dismissed   bool            `json:"dismissed"`
 	NewMessages int             `json:"newMessages"`
 	Messages    []RakumaMessage `json:"messages"`
+	Replies     []RakumaReply   `json:"replies"`
 	SyncedAt    string          `json:"syncedAt"`
+}
+
+type RakumaReply struct {
+	ID        int64  `json:"id,string"`
+	BodyVi    string `json:"bodyVi"`
+	BodyJa    string `json:"bodyJa"`
+	Status    string `json:"status"` // PENDING | SENT
+	CreatedAt string `json:"createdAt"`
+	SentAt    string `json:"sentAt"`
 }
