@@ -11,7 +11,7 @@ import (
 const rakumaSelect = `
 SELECT o.id, o.order_no, o.item_url, o.title, o.image_url, o.status, COALESCE(to_char(o.order_date, 'YYYY-MM-DD'), ''),
        o.price, o.discount, o.carrier, COALESCE(o.tracking_no, ''), o.seller, o.summary, o.reply_draft,
-       o.rating, o.issue_note, o.purchase_id::text, o.is_dismissed,
+       o.rating, o.issue_note, o.purchase_id::text, o.is_dismissed, o.is_chat_open,
        (SELECT COUNT(*) FROM rakuma_messages m WHERE m.order_id = o.id AND m.sender = 'seller'
           AND (o.messages_handled_at IS NULL OR m.created_at > o.messages_handled_at))::int,
        to_char(o.synced_at AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI')
@@ -20,7 +20,7 @@ FROM rakuma_orders o`
 func scanRakuma(row pgx.Row) (models.RakumaOrder, error) {
 	var o models.RakumaOrder
 	err := row.Scan(&o.ID, &o.OrderNo, &o.Link, &o.Title, &o.Image, &o.Status, &o.Date, &o.Price, &o.Discount, &o.Carrier,
-		&o.Tracking, &o.Seller, &o.Summary, &o.ReplyDraft, &o.Rating, &o.IssueNote, &o.PurchaseID, &o.Dismissed, &o.NewMessages, &o.SyncedAt)
+		&o.Tracking, &o.Seller, &o.Summary, &o.ReplyDraft, &o.Rating, &o.IssueNote, &o.PurchaseID, &o.Dismissed, &o.ChatOpen, &o.NewMessages, &o.SyncedAt)
 	return o, err
 }
 
@@ -78,7 +78,7 @@ func GetRakumaOrder(ctx context.Context, db DB, id int64) (models.RakumaOrder, e
 // rakumaReplies groups the owner's replies by order; orderID 0 means all orders.
 func rakumaReplies(ctx context.Context, db DB, orderID int64) (map[int64][]models.RakumaReply, error) {
 	rows, err := db.Query(ctx, `
-		SELECT order_id, id, body_vi, body_ja, status,
+		SELECT order_id, id, body_vi, body_ja, kind, status, skip_reason,
 		       to_char(created_at AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI'),
 		       COALESCE(to_char(sent_at AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI'), '')
 		FROM rakuma_replies WHERE $1 = 0 OR order_id = $1 ORDER BY order_id, id`, orderID)
@@ -90,7 +90,7 @@ func rakumaReplies(ctx context.Context, db DB, orderID int64) (map[int64][]model
 	for rows.Next() {
 		var oid int64
 		var r models.RakumaReply
-		if err := rows.Scan(&oid, &r.ID, &r.BodyVi, &r.BodyJa, &r.Status, &r.CreatedAt, &r.SentAt); err != nil {
+		if err := rows.Scan(&oid, &r.ID, &r.BodyVi, &r.BodyJa, &r.Kind, &r.Status, &r.Reason, &r.CreatedAt, &r.SentAt); err != nil {
 			return nil, err
 		}
 		out[oid] = append(out[oid], r)
@@ -136,6 +136,7 @@ type RakumaRow struct {
 	Seller     string
 	Summary    string
 	ReplyDraft string
+	ChatOpen   *bool
 }
 
 // UpsertRakumaOrder inserts or refreshes an order by order_no. Empty date, tracking, summary and draft never erase
@@ -143,8 +144,8 @@ type RakumaRow struct {
 func UpsertRakumaOrder(ctx context.Context, db DB, r RakumaRow) (id int64, created bool, err error) {
 	err = db.QueryRow(ctx, `
 		INSERT INTO rakuma_orders (order_no, item_url, title, status, order_date, price, discount, carrier, tracking_no,
-		                           seller, summary, reply_draft, image_url)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		                           seller, summary, reply_draft, image_url, is_chat_open)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, COALESCE($14, TRUE))
 		ON CONFLICT (order_no) DO UPDATE SET
 			item_url    = EXCLUDED.item_url,
 			title       = EXCLUDED.title,
@@ -158,11 +159,12 @@ func UpsertRakumaOrder(ctx context.Context, db DB, r RakumaRow) (id int64, creat
 			seller      = CASE WHEN EXCLUDED.seller = '' THEN rakuma_orders.seller ELSE EXCLUDED.seller END,
 			summary     = CASE WHEN EXCLUDED.summary = '' THEN rakuma_orders.summary ELSE EXCLUDED.summary END,
 			reply_draft = CASE WHEN EXCLUDED.reply_draft = '' THEN rakuma_orders.reply_draft ELSE EXCLUDED.reply_draft END,
+			is_chat_open = COALESCE($14, rakuma_orders.is_chat_open),
 			synced_at   = now(),
 			updated_at  = now()
 		RETURNING id, xmax = 0`,
 		r.OrderNo, r.Link, r.Title, r.Status, r.Date, r.Price, r.Discount, r.Carrier, r.Tracking, r.Seller, r.Summary,
-		r.ReplyDraft, r.Image).Scan(&id, &created)
+		r.ReplyDraft, r.Image, r.ChatOpen).Scan(&id, &created)
 	return
 }
 
@@ -199,10 +201,20 @@ func SetRakumaNotes(ctx context.Context, db DB, id int64, rating, issueNote stri
 	return err
 }
 
-func InsertRakumaReply(ctx context.Context, db DB, orderID int64, bodyVi string) (int64, error) {
+func InsertRakumaReply(ctx context.Context, db DB, orderID int64, kind, bodyVi string) (int64, error) {
 	var id int64
-	err := db.QueryRow(ctx, `INSERT INTO rakuma_replies (order_id, body_vi) VALUES ($1, $2) RETURNING id`, orderID, bodyVi).Scan(&id)
+	err := db.QueryRow(ctx, `INSERT INTO rakuma_replies (order_id, kind, body_vi) VALUES ($1, $2, $3) RETURNING id`, orderID, kind, bodyVi).Scan(&id)
 	return id, err
+}
+
+func SkipRakumaReply(ctx context.Context, db DB, id int64, reason string) error {
+	_, err := db.Exec(ctx, `UPDATE rakuma_replies SET status = 'SKIPPED', skip_reason = $2, sent_at = now() WHERE id = $1`, id, reason)
+	return err
+}
+
+func SetRakumaChatOpen(ctx context.Context, db DB, id int64, open bool) error {
+	_, err := db.Exec(ctx, `UPDATE rakuma_orders SET is_chat_open = $2, updated_at = now() WHERE id = $1`, id, open)
+	return err
 }
 
 // ReplyOrder returns the reply's order id and status.

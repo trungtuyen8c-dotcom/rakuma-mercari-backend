@@ -445,3 +445,39 @@ func (h *Handlers) DeleteRakumaReply(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, out)
 }
+
+func (h *Handlers) BroadcastRakuma(c *gin.Context) {
+	var in struct {
+		OrderIDs []string `json:"orderIds"`
+		Body     string   `json:"body"`
+	}
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.BroadcastRakuma(c.Request.Context(), actor(c), in.OrderIDs, in.Body)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, out)
+}
+
+func (h *Handlers) SkipRakumaReply(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	var in struct {
+		Reason     string `json:"reason"`
+		ChatClosed bool   `json:"chatClosed"`
+	}
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.SkipRakumaReply(c.Request.Context(), actor(c), id, in.Reason, in.ChatClosed)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}

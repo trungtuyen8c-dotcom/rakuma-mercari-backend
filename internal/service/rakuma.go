@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -32,6 +33,7 @@ type RakumaOrderInput struct {
 	Seller     string               `json:"seller"`
 	Summary    string               `json:"summary"`
 	ReplyDraft string               `json:"replyDraft"`
+	ChatOpen   *bool                `json:"chatOpen"` // omitted = keep; false once Rakuma hides the chat
 	Messages   []RakumaMessageInput `json:"messages"`
 }
 
@@ -47,7 +49,7 @@ func validRakumaOrder(in RakumaOrderInput) (repo.RakumaRow, map[string]string) {
 	r := repo.RakumaRow{
 		OrderNo: strings.TrimSpace(in.OrderNo), Link: strings.TrimSpace(in.Link), Title: strings.TrimSpace(in.Title),
 		Status: strings.TrimSpace(in.Status), Carrier: strings.TrimSpace(in.Carrier), Seller: strings.TrimSpace(in.Seller),
-		Summary: strings.TrimSpace(in.Summary), ReplyDraft: strings.TrimSpace(in.ReplyDraft),
+		Summary: strings.TrimSpace(in.Summary), ReplyDraft: strings.TrimSpace(in.ReplyDraft), ChatOpen: in.ChatOpen,
 	}
 	if r.OrderNo == "" {
 		e["orderNo"] = "Thiếu mã đơn Rakuma."
@@ -259,8 +261,11 @@ func (s *Service) AddRakumaReply(ctx context.Context, actor string, id int64, bo
 	if body == "" {
 		return models.RakumaOrder{}, &ValidationError{Fields: map[string]string{"body": "Nhập nội dung trả lời."}}
 	}
-	return s.updateRakuma(ctx, actor, id, "reply", func(tx pgx.Tx, _ models.RakumaOrder) error {
-		_, err := repo.InsertRakumaReply(ctx, tx, id, body)
+	return s.updateRakuma(ctx, actor, id, "reply", func(tx pgx.Tx, o models.RakumaOrder) error {
+		if !o.ChatOpen {
+			return errChatClosed
+		}
+		_, err := repo.InsertRakumaReply(ctx, tx, id, "REPLY", body)
 		return err
 	})
 }
@@ -291,5 +296,77 @@ func (s *Service) updateReply(ctx context.Context, actor string, replyID int64, 
 			return &ConflictError{Msg: "Tin trả lời này đã được gửi."}
 		}
 		return fn(tx)
+	})
+}
+
+var errChatClosed = &ConflictError{Msg: "Chat của đơn này đã đóng trên Rakuma, không gửi được nữa."}
+
+// MaxBroadcast caps one broadcast; Claude also paces sending, so a large batch spreads over several syncs.
+const MaxBroadcast = 100
+
+type BroadcastResult struct {
+	Queued  int `json:"queued"`
+	Skipped int `json:"skipped"` // chat already closed or order not found
+}
+
+// BroadcastRakuma queues one Vietnamese message for each selected order whose chat is still open. Claude translates,
+// adds the seller and item name, and posts them slowly so the account is not flagged for spam.
+func (s *Service) BroadcastRakuma(ctx context.Context, actor string, orderIDs []string, body string) (BroadcastResult, error) {
+	var res BroadcastResult
+	body = strings.TrimSpace(body)
+	e := map[string]string{}
+	if body == "" {
+		e["body"] = "Nhập nội dung tin nhắn."
+	}
+	if len(orderIDs) == 0 || len(orderIDs) > MaxBroadcast {
+		e["orderIds"] = fmt.Sprintf("Chọn từ 1 đến %d đơn.", MaxBroadcast)
+	}
+	if len(e) > 0 {
+		return res, &ValidationError{Fields: e}
+	}
+	err := s.tx(ctx, func(tx pgx.Tx) error {
+		seen := map[int64]bool{}
+		for _, raw := range orderIDs {
+			id, ok := parseID(raw)
+			if !ok || seen[id] {
+				continue
+			}
+			seen[id] = true
+			o, err := repo.GetRakumaOrder(ctx, tx, id)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+			if err != nil || !o.ChatOpen {
+				res.Skipped++
+				continue
+			}
+			if _, err := repo.InsertRakumaReply(ctx, tx, id, "BROADCAST", body); err != nil {
+				return err
+			}
+			res.Queued++
+		}
+		return repo.Audit(ctx, tx, "rakuma_broadcast", "batch", "create", actor, nil, map[string]any{"body": body, "result": res})
+	})
+	return res, err
+}
+
+// SkipRakumaReply records that Claude could not post a pending reply; chatClosed also marks the order's chat closed.
+func (s *Service) SkipRakumaReply(ctx context.Context, actor string, replyID int64, reason string, chatClosed bool) (models.RakumaOrder, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return models.RakumaOrder{}, &ValidationError{Fields: map[string]string{"reason": "Ghi lý do bỏ qua."}}
+	}
+	return s.updateReply(ctx, actor, replyID, "reply_skip", func(tx pgx.Tx) error {
+		if err := repo.SkipRakumaReply(ctx, tx, replyID, reason); err != nil {
+			return err
+		}
+		if !chatClosed {
+			return nil
+		}
+		orderID, _, err := repo.ReplyOrder(ctx, tx, replyID)
+		if err != nil {
+			return err
+		}
+		return repo.SetRakumaChatOpen(ctx, tx, orderID, false)
 	})
 }

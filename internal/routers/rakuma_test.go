@@ -164,3 +164,52 @@ func TestRakumaRepliesFlow(t *testing.T) {
 	}
 	e.ok("DELETE", "/api/v1/rakuma/replies/999", nil, 404)
 }
+
+func TestRakumaBroadcastSkipsClosedChats(t *testing.T) {
+	e := setup(t)
+	write := e.ok("POST", "/api/v1/api-keys", map[string]string{"name": "claude", "scope": "write"}, 201)["key"].(string)
+	closed := false
+	list := e.sync(write, rakumaOrder("A1", nil), rakumaOrder("B1", map[string]any{"chatOpen": closed}), rakumaOrder("C1", nil))["_"].([]any)
+	ids := map[string]string{}
+	for _, o := range list {
+		m := o.(map[string]any)
+		ids[m["orderNo"].(string)] = m["id"].(string)
+	}
+	// A later sync without chatOpen keeps the stored value
+	e.sync(write, rakumaOrder("B1", nil))
+
+	e.ok("POST", "/api/v1/rakuma/broadcast", map[string]any{"orderIds": []string{}, "body": "Còn hàng không?"}, 422)
+	out := e.ok("POST", "/api/v1/rakuma/broadcast", map[string]any{
+		"orderIds": []string{ids["A1"], ids["B1"], ids["C1"], ids["C1"], "999"}, "body": "Shop còn hàng không?"}, 201)
+	if num(out["queued"]) != 2 || num(out["skipped"]) != 2 {
+		t.Fatalf("broadcast: %v", out)
+	}
+	e.ok("POST", "/api/v1/rakuma/orders/"+ids["B1"]+"/replies", map[string]any{"body": "x"}, 409)
+
+	// Claude finds C1's chat closed when sending: the reply is skipped and the order marked closed
+	var rid string
+	for _, o := range e.ok("GET", "/api/v1/rakuma/orders", nil, 200)["_"].([]any) {
+		m := o.(map[string]any)
+		if m["orderNo"] == "C1" {
+			r := m["replies"].([]any)[0].(map[string]any)
+			if r["kind"] != "BROADCAST" {
+				t.Fatalf("kind: %v", r)
+			}
+			rid = r["id"].(string)
+		}
+	}
+	res := e.do("POST", "/api/v1/rakuma/replies/"+rid+"/skip", map[string]any{"reason": "取引メッセージ非公開", "chatClosed": true}, write)
+	if res.Code != 200 {
+		t.Fatalf("skip: %d %s", res.Code, res.Body)
+	}
+	o := e.ok("GET", "/api/v1/rakuma/orders", nil, 200)["_"].([]any)
+	for _, x := range o {
+		m := x.(map[string]any)
+		if m["orderNo"] == "C1" && (m["chatOpen"] != false || m["replies"].([]any)[0].(map[string]any)["status"] != "SKIPPED") {
+			t.Fatalf("skipped order: %v", m)
+		}
+	}
+	if res := e.do("POST", "/api/v1/rakuma/replies/"+rid+"/sent", map[string]any{"bodyJa": "x"}, write); res.Code != 409 {
+		t.Fatalf("send after skip: %d", res.Code)
+	}
+}

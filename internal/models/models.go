@@ -185,6 +185,7 @@ type RakumaOrder struct {
 	IssueNote   string          `json:"issueNote"` // non-empty = open problem, shown highlighted
 	PurchaseID  *string         `json:"purchaseId"`
 	Dismissed   bool            `json:"dismissed"`
+	ChatOpen    bool            `json:"chatOpen"`
 	NewMessages int             `json:"newMessages"`
 	Messages    []RakumaMessage `json:"messages"`
 	Replies     []RakumaReply   `json:"replies"`
@@ -195,7 +196,9 @@ type RakumaReply struct {
 	ID        int64  `json:"id,string"`
 	BodyVi    string `json:"bodyVi"`
 	BodyJa    string `json:"bodyJa"`
-	Status    string `json:"status"` // PENDING | SENT
+	Kind      string `json:"kind"`   // REPLY | BROADCAST
+	Status    string `json:"status"` // PENDING | SENT | SKIPPED
+	Reason    string `json:"reason"` // why it was skipped
 	CreatedAt string `json:"createdAt"`
 	SentAt    string `json:"sentAt"`
 }
