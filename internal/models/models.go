@@ -154,4 +154,51 @@ type State struct {
 	APIKeys   []APIKey                  `json:"apiKeys"`
 	Settings  Settings                  `json:"settings"`
 	User      *User                     `json:"user"`
+	Rakuma    []RakumaOrder             `json:"rakuma"`
+}
+
+type RakumaMessage struct {
+	ID   int64  `json:"id,string"`
+	From string `json:"from"` // seller | buyer
+	At   string `json:"at"`   // Rakuma's display text
+	Body string `json:"body"`
+	New  bool   `json:"new"` // arrived after the owner last marked the thread handled
+}
+
+// RakumaOrder is one order synced from Rakuma. Price and Discount are order totals, not per unit.
+type RakumaOrder struct {
+	ID          int64           `json:"id,string"`
+	OrderNo     string          `json:"orderNo"`
+	Link        string          `json:"link"`
+	Title       string          `json:"title"`
+	Image       string          `json:"image"`
+	Status      string          `json:"status"`
+	Date        string          `json:"date"`
+	Price       int64           `json:"price"`
+	Discount    int64           `json:"discount"`
+	Carrier     string          `json:"carrier"`
+	Tracking    string          `json:"tracking"`
+	Seller      string          `json:"seller"`
+	Summary     string          `json:"summary"`
+	ReplyDraft  string          `json:"replyDraft"`
+	Rating      string          `json:"rating"`    // "" | GOOD | NORMAL | BAD
+	IssueNote   string          `json:"issueNote"` // non-empty = open problem, shown highlighted
+	PurchaseID  *string         `json:"purchaseId"`
+	Dismissed   bool            `json:"dismissed"`
+	ChatOpen    bool            `json:"chatOpen"`
+	NewMessages int             `json:"newMessages"`
+	Messages    []RakumaMessage `json:"messages"`
+	Replies     []RakumaReply   `json:"replies"`
+	SyncedAt    string          `json:"syncedAt"`
+}
+
+type RakumaReply struct {
+	ID        int64  `json:"id,string"`
+	BodyVi    string `json:"bodyVi"`
+	BodyJa    string `json:"bodyJa"`
+	Kind      string `json:"kind"`   // REPLY | BROADCAST
+	Status    string `json:"status"` // PENDING | SENT | SKIPPED
+	Reason    string `json:"reason"` // why it was skipped
+	CreatedAt string `json:"createdAt"`
+	SentAt    string `json:"sentAt"`
 }

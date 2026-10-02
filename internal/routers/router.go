@@ -13,7 +13,7 @@ import (
 // New wires routes. Access levels:
 //
 //	read  = owner session or any API key      (GET reports and lists)
-//	write = owner session or "write" API key  (add products, purchases, sales)
+//	write = owner session or "write" API key  (add products, purchases, sales; Rakuma sync)
 //	owner = owner session only                (edit/delete, stock opening, close period, settings, API keys)
 func New(svc *service.Service) *gin.Engine {
 	r := gin.New()
@@ -46,11 +46,15 @@ func New(svc *service.Service) *gin.Engine {
 	read.GET("/dashboard", h.Dashboard)
 	read.GET("/periods", h.ListPeriods)
 	read.GET("/analysis/products/:id", h.Analysis)
+	read.GET("/rakuma/orders", h.ListRakuma)
 
 	write := api.Group("", middlewares.RequireScope("write"))
 	write.POST("/products", h.CreateProduct)
 	write.POST("/purchases", h.CreatePurchase)
 	write.POST("/sales", h.CreateSale)
+	write.POST("/rakuma/sync", h.SyncRakuma)
+	write.POST("/rakuma/replies/:id/sent", h.MarkRakumaReplySent)
+	write.POST("/rakuma/replies/:id/skip", h.SkipRakumaReply)
 
 	owner := api.Group("", middlewares.RequireOwner())
 	owner.GET("/state", h.State)
@@ -67,6 +71,13 @@ func New(svc *service.Service) *gin.Engine {
 	owner.GET("/api-keys", h.ListAPIKeys)
 	owner.POST("/api-keys", h.CreateAPIKey)
 	owner.POST("/api-keys/:id/revoke", h.RevokeAPIKey)
+	owner.POST("/rakuma/orders/:id/approve", h.ApproveRakuma)
+	owner.POST("/rakuma/orders/:id/dismiss", h.DismissRakuma)
+	owner.POST("/rakuma/orders/:id/messages-handled", h.HandleRakumaMessages)
+	owner.PATCH("/rakuma/orders/:id", h.UpdateRakuma)
+	owner.POST("/rakuma/orders/:id/replies", h.AddRakumaReply)
+	owner.POST("/rakuma/broadcast", h.BroadcastRakuma)
+	owner.DELETE("/rakuma/replies/:id", h.DeleteRakumaReply)
 
 	return r
 }

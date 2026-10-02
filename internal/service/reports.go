@@ -193,6 +193,9 @@ func (s *Service) State(ctx context.Context, user *models.User) (models.State, e
 	if st.Settings, err = s.Settings(ctx); err != nil {
 		return st, err
 	}
+	if st.Rakuma, err = repo.ListRakumaOrders(ctx, s.Pool); err != nil {
+		return st, err
+	}
 	st.User = user
 	return st, nil
 }

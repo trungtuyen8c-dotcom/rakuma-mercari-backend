@@ -70,6 +70,16 @@ func (s *Service) activeProduct(ctx context.Context, db repo.DB, id string) (mod
 func (s *Service) AddPurchase(ctx context.Context, actor string, in PurchaseInput, force bool) (models.Purchase, error) {
 	var out models.Purchase
 	err := s.tx(ctx, func(tx pgx.Tx) error {
+		var err error
+		out, err = s.addPurchase(ctx, tx, actor, in, force)
+		return err
+	})
+	return out, err
+}
+
+func (s *Service) addPurchase(ctx context.Context, tx pgx.Tx, actor string, in PurchaseInput, force bool) (models.Purchase, error) {
+	var out models.Purchase
+	err := func() error {
 		open, err := repo.OpenPeriod(ctx, tx, false)
 		if err != nil {
 			return err
@@ -168,7 +178,7 @@ func (s *Service) AddPurchase(ctx context.Context, actor string, in PurchaseInpu
 			return err
 		}
 		return repo.Audit(ctx, tx, "purchase", id, "create", actor, nil, out)
-	})
+	}()
 	return out, err
 }
 
