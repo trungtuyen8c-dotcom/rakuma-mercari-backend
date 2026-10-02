@@ -253,6 +253,28 @@ func TestAC07_OversellWarnsButAllows(t *testing.T) {
 	}
 }
 
+// Owner decision: a 0¥ sale records opened stock ("bóc hàng"); it needs confirmation.
+func TestZeroPriceSaleIsOpenedStock(t *testing.T) {
+	e := setup(t)
+	pid := e.product("op 17")
+	e.ok("POST", "/api/v1/purchases", purchase(pid, 1000, 3, 0, nil), 201)
+	out := e.ok("POST", "/api/v1/sales", map[string]any{"productId": pid, "qty": 1, "price": 0}, 409)
+	if w := out["warnings"].([]any); len(w) != 1 || !strings.Contains(w[0].(string), "bóc hàng") {
+		t.Fatalf("warnings=%v", out["warnings"])
+	}
+	s := e.ok("POST", "/api/v1/sales?force=true", map[string]any{"productId": pid, "qty": 1, "price": 0}, 201)
+	if num(s["total"]) != 0 || s["note"] != "Bóc hàng" {
+		t.Fatalf("sale=%v", s)
+	}
+	if st := e.stock(pid); num(st["current"]) != 2 {
+		t.Fatalf("stock=%v", st)
+	}
+	if rev := num(e.ok("GET", "/api/v1/dashboard", nil, 200)["totals"].(map[string]any)["periodRevenue"]); rev != 0 {
+		t.Fatalf("revenue=%d", rev)
+	}
+	e.ok("POST", "/api/v1/sales", map[string]any{"productId": pid, "qty": 1, "price": -5}, 422)
+}
+
 func TestAC08_DuplicateLinkWarns(t *testing.T) {
 	e := setup(t)
 	pid := e.product("ninja")

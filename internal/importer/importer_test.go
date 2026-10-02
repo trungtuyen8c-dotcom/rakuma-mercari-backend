@@ -76,6 +76,12 @@ func buildWorkbook(t *testing.T) string {
 	set("💰 BÁN HÀNG", "D5", 2)
 	set("💰 BÁN HÀNG", "E5", 1000)
 	set("💰 BÁN HÀNG", "F5", 2000)
+	// 0¥ row = opened stock ("bóc hàng"): reduces stock, no revenue
+	set("💰 BÁN HÀNG", "C6", "dream")
+	set("💰 BÁN HÀNG", "D6", 1)
+	set("💰 BÁN HÀNG", "E6", 0)
+	set("💰 BÁN HÀNG", "F6", 0)
+	set("💰 BÁN HÀNG", "B6", 16) // day number only -> month of the row above (2026-07)
 
 	path := filepath.Join(t.TempDir(), "rakuma_t7.xlsx")
 	must(f.SaveAs(path))
@@ -106,8 +112,8 @@ func TestImportReconciles(t *testing.T) {
 	}
 	path := buildWorkbook(t)
 
-	// Cost = 1000 + 20000 + 15810 + 500 + 50000; revenue = 2000 + 27200 + 2000; stock = (3+3-0) + (1+10-4) + (0+1-2)
-	want := importer.Expect{TotalCost: 87310, TotalRevenue: 31200, Stock: 12}
+	// Cost = 1000 + 20000 + 15810 + 500 + 50000; revenue = 2000 + 27200 + 2000; stock = (3+3-0) + (1+10-4) + (0+1-2-1)
+	want := importer.Expect{TotalCost: 87310, TotalRevenue: 31200, Stock: 11}
 
 	// A wrong expectation rolls everything back
 	if _, err := importer.Run(ctx, pool, path, importer.DefaultLayout(), &importer.Expect{TotalCost: 1}); err == nil || !strings.Contains(err.Error(), "LỆCH") {
@@ -123,7 +129,7 @@ func TestImportReconciles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Products != 3 || rep.Regular != 3 || rep.Bulk != 1 || rep.Sales != 2 || len(rep.TotalMismatches) != 0 {
+	if rep.Products != 3 || rep.Regular != 3 || rep.Bulk != 1 || rep.Sales != 3 || len(rep.TotalMismatches) != 0 {
 		t.Fatalf("report=%+v", rep)
 	}
 
@@ -139,6 +145,16 @@ func TestImportReconciles(t *testing.T) {
 	_ = pool.QueryRow(ctx, `SELECT note FROM purchases WHERE item_url IS NULL AND source = 'REGULAR'`).Scan(&note)
 	if note != "lấy ở tabata" {
 		t.Fatalf("note=%q", note)
+	}
+	var opened string
+	_ = pool.QueryRow(ctx, `SELECT note FROM sales WHERE unit_price = 0`).Scan(&opened)
+	if opened != service.OpenedStockNote {
+		t.Fatalf("0¥ sale note=%q", opened)
+	}
+	var dayOnly string
+	_ = pool.QueryRow(ctx, `SELECT to_char(sale_date, 'YYYY-MM-DD') FROM sales WHERE unit_price = 0`).Scan(&dayOnly)
+	if dayOnly != "2026-07-16" {
+		t.Fatalf("day-only date=%q", dayOnly)
 	}
 	var start string
 	_ = pool.QueryRow(ctx, `SELECT to_char(start_date, 'YYYY-MM-DD') FROM periods WHERE status = 'OPEN'`).Scan(&start)

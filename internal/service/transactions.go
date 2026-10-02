@@ -31,6 +31,9 @@ type PurchaseInput struct {
 	Note      string `json:"note"`
 }
 
+// OpenedStockNote marks a 0¥ sale that only takes opened items out of stock.
+const OpenedStockNote = "Bóc hàng"
+
 type SaleInput struct {
 	ProductID string `json:"productId"`
 	Date      string `json:"date"`
@@ -232,8 +235,8 @@ func (s *Service) AddSale(ctx context.Context, actor string, in SaleInput, force
 			e["qty"] = "Số lượng phải là số nguyên từ 1 trở lên."
 		}
 		price, pOK := in.Price.int()
-		if !pOK || price <= 0 {
-			e["price"] = "Đơn giá phải là số nguyên lớn hơn 0."
+		if !pOK || price < 0 {
+			e["price"] = "Đơn giá phải là số nguyên ≥ 0 (0 = bóc hàng)."
 		}
 		ship := int64(0)
 		if !in.Ship.empty() {
@@ -251,21 +254,34 @@ func (s *Service) AddSale(ctx context.Context, actor string, in SaleInput, force
 			return &ValidationError{Fields: e}
 		}
 
-		if !force { // BR-09 / E9: warn when stock would go negative; never block (GD-05)
+		if !force {
+			var w []string
+			// 0¥ = opened stock ("bóc hàng"): confirm so a forgotten price is not saved silently
+			if price == 0 {
+				w = append(w, "Đơn giá 0¥: đơn này chỉ trừ tồn kho (bóc hàng), không tính doanh thu.")
+			}
+			// BR-09 / E9: warn when stock would go negative; never block (GD-05)
 			var current int
 			err := tx.QueryRow(ctx, `SELECT current FROM stock_by_period WHERE period_id = $1 AND product_id = $2`, open.ID, prod.ID).Scan(&current)
 			if err != nil {
 				return err
 			}
 			if current-int(qty) < 0 {
-				return &WarningError{Warnings: []string{fmt.Sprintf("Chỉ còn %d cái “%s”, bạn đang bán %d cái. Tồn kho sẽ âm %d cái.",
-					current, prod.Name, qty, int(qty)-current)}}
+				w = append(w, fmt.Sprintf("Chỉ còn %d cái “%s”, bạn đang bán %d cái. Tồn kho sẽ âm %d cái.",
+					current, prod.Name, qty, int(qty)-current))
 			}
+			if len(w) > 0 {
+				return &WarningError{Warnings: w}
+			}
+		}
+		note := strings.TrimSpace(in.Note)
+		if price == 0 && note == "" {
+			note = OpenedStockNote
 		}
 
 		id, err := repo.InsertSale(ctx, tx, repo.SaleRow{
 			PeriodID: open.ID, Date: ptr(date), ProductID: prod.ID, Qty: int(qty), Price: price, Ship: ship,
-			Customer: strings.TrimSpace(in.Customer), Note: strings.TrimSpace(in.Note),
+			Customer: strings.TrimSpace(in.Customer), Note: note,
 		})
 		if err != nil {
 			return err
