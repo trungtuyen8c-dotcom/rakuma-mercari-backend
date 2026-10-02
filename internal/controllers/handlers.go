@@ -299,3 +299,78 @@ func (h *Handlers) RevokeAPIKey(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, out)
 }
+
+// Rakuma sync
+
+func (h *Handlers) ListRakuma(c *gin.Context) {
+	out, err := repo.ListRakumaOrders(c.Request.Context(), h.Svc.Pool)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func (h *Handlers) SyncRakuma(c *gin.Context) {
+	var in struct {
+		Orders []service.RakumaOrderInput `json:"orders"`
+	}
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.SyncRakuma(c.Request.Context(), actor(c), in.Orders)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func (h *Handlers) ApproveRakuma(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	var in service.PurchaseInput
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.ApproveRakuma(c.Request.Context(), actor(c), id, in, force(c))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, out)
+}
+
+func (h *Handlers) DismissRakuma(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	var in struct {
+		Dismissed bool `json:"dismissed"`
+	}
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.DismissRakuma(c.Request.Context(), actor(c), id, in.Dismissed)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func (h *Handlers) HandleRakumaMessages(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	out, err := h.Svc.HandleRakumaMessages(c.Request.Context(), actor(c), id)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}

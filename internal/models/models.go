@@ -154,4 +154,35 @@ type State struct {
 	APIKeys   []APIKey                  `json:"apiKeys"`
 	Settings  Settings                  `json:"settings"`
 	User      *User                     `json:"user"`
+	Rakuma    []RakumaOrder             `json:"rakuma"`
+}
+
+type RakumaMessage struct {
+	ID   int64  `json:"id,string"`
+	From string `json:"from"` // seller | buyer
+	At   string `json:"at"`   // Rakuma's display text
+	Body string `json:"body"`
+	New  bool   `json:"new"` // arrived after the owner last marked the thread handled
+}
+
+// RakumaOrder is one order synced from Rakuma. Price and Discount are order totals, not per unit.
+type RakumaOrder struct {
+	ID          int64           `json:"id,string"`
+	OrderNo     string          `json:"orderNo"`
+	Link        string          `json:"link"`
+	Title       string          `json:"title"`
+	Status      string          `json:"status"`
+	Date        string          `json:"date"`
+	Price       int64           `json:"price"`
+	Discount    int64           `json:"discount"`
+	Carrier     string          `json:"carrier"`
+	Tracking    string          `json:"tracking"`
+	Seller      string          `json:"seller"`
+	Summary     string          `json:"summary"`
+	ReplyDraft  string          `json:"replyDraft"`
+	PurchaseID  *string         `json:"purchaseId"`
+	Dismissed   bool            `json:"dismissed"`
+	NewMessages int             `json:"newMessages"`
+	Messages    []RakumaMessage `json:"messages"`
+	SyncedAt    string          `json:"syncedAt"`
 }
