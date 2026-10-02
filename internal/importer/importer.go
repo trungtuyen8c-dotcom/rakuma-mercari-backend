@@ -20,6 +20,7 @@ import (
 	"github.com/xuri/excelize/v2"
 
 	"github.com/trungtuyen8c-dotcom/rakuma-mercari-backend/internal/repo"
+	"github.com/trungtuyen8c-dotcom/rakuma-mercari-backend/internal/service"
 )
 
 type Layout struct {
@@ -100,23 +101,29 @@ func Inspect(path string, w io.Writer) error {
 	return nil
 }
 
+// sheet holds one worksheet's raw cell values, read once (reading per cell re-parses the whole sheet).
 type sheet struct {
-	f    *excelize.File
 	name string
+	rows [][]string
+}
+
+func loadSheet(f *excelize.File, name string) sheet {
+	rows, _ := f.GetRows(name, excelize.Options{RawCellValue: true})
+	return sheet{name: name, rows: rows}
 }
 
 func (s sheet) cell(col string, row int) string {
-	if col == "" {
+	if col == "" || row < 1 || row > len(s.rows) {
 		return ""
 	}
-	v, _ := s.f.GetCellValue(s.name, fmt.Sprintf("%s%d", col, row), excelize.Options{RawCellValue: true})
-	return strings.TrimSpace(v)
+	c, err := excelize.ColumnNameToNumber(col)
+	if err != nil || c > len(s.rows[row-1]) {
+		return ""
+	}
+	return strings.TrimSpace(s.rows[row-1][c-1])
 }
 
-func (s sheet) lastRow() int {
-	rows, _ := s.f.GetRows(s.name)
-	return len(rows)
-}
+func (s sheet) lastRow() int { return len(s.rows) }
 
 func parseMoney(v string) (int64, bool) {
 	if v == "" {
@@ -140,11 +147,36 @@ func parseTracking(v string) string {
 	return v
 }
 
+// dayOnly reports a date cell that holds just a day number (e.g. "16"), as typed by hand in the sheet.
+func dayOnly(v string) (int, bool) {
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f != math.Trunc(f) || f < 1 || f > 31 {
+		return 0, false
+	}
+	return int(f), true
+}
+
+// withDay puts day d into the month of prev ("YYYY-MM-DD"); false if that date does not exist.
+func withDay(prev string, d int) (string, bool) {
+	t, err := time.Parse("2006-01-02", prev)
+	if err != nil {
+		return "", false
+	}
+	out := time.Date(t.Year(), t.Month(), d, 0, 0, 0, 0, time.UTC)
+	if out.Month() != t.Month() {
+		return "", false
+	}
+	return out.Format("2006-01-02"), true
+}
+
 func parseDate(v string) (string, bool) {
 	if v == "" {
 		return "", true
 	}
 	if f, err := strconv.ParseFloat(v, 64); err == nil {
+		if f < 36526 { // before 2000-01-01: not a real order/sale date
+			return "", false
+		}
 		t, err := excelize.ExcelDateToTime(f, false)
 		if err != nil {
 			return "", false
@@ -191,7 +223,7 @@ func Run(ctx context.Context, pool *pgxpool.Pool, path string, lay Layout, exp *
 	}
 
 	// Catalog (BR-01): names in column B
-	cat := sheet{f, sh["catalog"]}
+	cat := loadSheet(f, sh["catalog"])
 	var names []string
 	seen := map[string]bool{}
 	for r := lay.FirstRow; r <= cat.lastRow(); r++ {
@@ -208,7 +240,8 @@ func Run(ctx context.Context, pool *pgxpool.Pool, path string, lay Layout, exp *
 
 	var bad []string
 	readPurchases := func(key, source string) []purRow {
-		s := sheet{f, sh[key]}
+		s := loadSheet(f, sh[key])
+		prevDate := ""
 		var out []purRow
 		for r := lay.FirstRow; r <= s.lastRow(); r++ {
 			p := purRow{sheet: s.name, source: source, row: r, product: s.cell("D", r)}
@@ -223,7 +256,16 @@ func Run(ctx context.Context, pool *pgxpool.Pool, path string, lay Layout, exp *
 			p.link = s.cell("C", r)
 			p.tracking = parseTracking(s.cell("I", r))
 			var okD bool
-			p.date, okD = parseDate(s.cell(lay.PurDate, r))
+			raw := s.cell(lay.PurDate, r)
+			if d, ok := dayOnly(raw); ok && prevDate != "" {
+				p.date, okD = withDay(prevDate, d)
+				rep.Notes = append(rep.Notes, fmt.Sprintf("%s dòng %d: ngày %q hiểu là %s (tháng của dòng trên)", s.name, r, raw, p.date))
+			} else {
+				p.date, okD = parseDate(raw)
+			}
+			if okD && p.date != "" {
+				prevDate = p.date
+			}
 			if !okP || !okQ || p.price <= 0 || p.qty < 1 || p.disc < 0 || p.disc > p.price || !okD {
 				bad = append(bad, fmt.Sprintf("%s dòng %d (%s): giá=%q SL=%q giảm=%q ngày=%q", s.name, r, p.product,
 					s.cell("E", r), s.cell("F", r), s.cell("G", r), s.cell(lay.PurDate, r)))
@@ -254,8 +296,9 @@ func Run(ctx context.Context, pool *pgxpool.Pool, path string, lay Layout, exp *
 	regular := readPurchases("regular", "REGULAR")
 	bulk := readPurchases("bulk", "BULK")
 
-	ss := sheet{f, sh["sales"]}
+	ss := loadSheet(f, sh["sales"])
 	var sales []saleRow
+	prevSale := ""
 	for r := lay.FirstRow; r <= ss.lastRow(); r++ {
 		s := saleRow{row: r, product: ss.cell("C", r)}
 		if s.product == "" {
@@ -266,9 +309,18 @@ func Run(ctx context.Context, pool *pgxpool.Pool, path string, lay Layout, exp *
 		s.price, okP = parseMoney(ss.cell("E", r))
 		s.ship, _ = parseMoney(ss.cell("G", r))
 		s.xtotal, s.hasTotal = parseMoney(ss.cell("F", r))
-		s.date, okD = parseDate(ss.cell(lay.SaleDate, r))
+		raw := ss.cell(lay.SaleDate, r)
+		if d, ok := dayOnly(raw); ok && prevSale != "" {
+			s.date, okD = withDay(prevSale, d)
+			rep.Notes = append(rep.Notes, fmt.Sprintf("%s dòng %d: ngày %q hiểu là %s (tháng của dòng trên)", ss.name, r, raw, s.date))
+		} else {
+			s.date, okD = parseDate(raw)
+		}
+		if okD && s.date != "" {
+			prevSale = s.date
+		}
 		s.cust = ss.cell(lay.SaleCustomer, r)
-		if !okQ || !okP || s.qty < 1 || s.price <= 0 || s.ship < 0 || !okD {
+		if !okQ || !okP || s.qty < 1 || s.price < 0 || s.ship < 0 || !okD {
 			bad = append(bad, fmt.Sprintf("%s dòng %d (%s): SL=%q giá=%q ship=%q ngày=%q", ss.name, r, s.product,
 				ss.cell("D", r), ss.cell("E", r), ss.cell("G", r), ss.cell(lay.SaleDate, r)))
 			continue
@@ -280,7 +332,7 @@ func Run(ctx context.Context, pool *pgxpool.Pool, path string, lay Layout, exp *
 	}
 
 	// Opening stock: stock sheet B name, C opening (products missing there start at 0, §13)
-	st := sheet{f, sh["stock"]}
+	st := loadSheet(f, sh["stock"])
 	openings := map[string]int64{}
 	for r := lay.FirstRow; r <= st.lastRow(); r++ {
 		if n := st.cell("B", r); n != "" {
@@ -288,7 +340,7 @@ func Run(ctx context.Context, pool *pgxpool.Pool, path string, lay Layout, exp *
 			openings[n] = q
 		}
 	}
-	set := sheet{f, sh["settings"]}
+	set := loadSheet(f, sh["settings"])
 	rep.OpeningCost, _ = parseMoney(set.cell("B", 9))
 	rep.OpeningRevenue, _ = parseMoney(set.cell("B", 10))
 
@@ -369,6 +421,9 @@ func Run(ctx context.Context, pool *pgxpool.Pool, path string, lay Layout, exp *
 				return fmt.Errorf("%s dòng %d: sản phẩm %q không có trong danh mục", ss.name, s.row, s.product)
 			}
 			row := repo.SaleRow{PeriodID: open.ID, ProductID: pid, Qty: int(s.qty), Price: s.price, Ship: s.ship, Customer: s.cust}
+			if s.price == 0 { // 0¥ rows record opened stock (owner decision)
+				row.Note = service.OpenedStockNote
+			}
 			if s.date != "" {
 				row.Date = &s.date
 				earliest = min(earliest, s.date)
