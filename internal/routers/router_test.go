@@ -340,22 +340,20 @@ func TestAC11_ClosePeriodCarriesForward(t *testing.T) {
 }
 
 func TestAC12_ClosedPeriodIsReadOnly(t *testing.T) {
+	// Owner decision (2026-10-03): working alone, the owner edits closed periods too; later periods follow.
 	e := setup(t)
 	pid := e.product("ninja")
 	pur := e.ok("POST", "/api/v1/purchases", purchase(pid, 1000, 2, 0, nil), 201)["id"].(string)
 	sale := e.ok("POST", "/api/v1/sales", map[string]any{"productId": pid, "qty": 1, "price": 2000}, 201)["id"].(string)
-	e.ok("POST", "/api/v1/periods/close", nil, 200)
-	for _, c := range []struct{ method, path string }{
-		{"DELETE", "/api/v1/sales/" + sale},
-		{"DELETE", "/api/v1/purchases/" + pur},
-		{"PATCH", "/api/v1/purchases/" + pur},
-	} {
-		out := e.ok(c.method, c.path, map[string]any{"checked": true}, 409)
-		if out["error"] != "Kỳ này đã chốt, không thể sửa." {
-			t.Fatalf("%s %s: %v", c.method, c.path, out)
-		}
+	next := e.ok("POST", "/api/v1/periods/close", nil, 200)
+	e.ok("PATCH", "/api/v1/purchases/"+pur, map[string]any{"checked": true}, 200)
+	e.ok("DELETE", "/api/v1/sales/"+sale, nil, 204)
+	// The next period's opening follows the edit: cost 2000, revenue 0 after the sale is gone, stock 2
+	nx := e.ok("GET", "/api/v1/dashboard?period_id="+next["id"].(string), nil, 200)["totals"].(map[string]any)
+	if num(nx["prevCost"]) != 2000 || num(nx["prevRevenue"]) != 0 || num(nx["stockTotal"]) != 2 {
+		t.Fatalf("next period did not follow: %v", nx)
 	}
-	// A date outside the open period is rejected
+	// Dates still have to fall inside an open period unless a period is chosen explicitly
 	out := e.ok("POST", "/api/v1/sales", map[string]any{"productId": pid, "qty": 1, "price": 1, "date": "2026-09-20"}, 422)
 	if out["errors"].(map[string]any)["date"] == nil {
 		t.Fatalf("date not rejected: %v", out)

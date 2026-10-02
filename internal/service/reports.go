@@ -196,6 +196,9 @@ func (s *Service) State(ctx context.Context, user *models.User) (models.State, e
 	if st.Openings, err = repo.Openings(ctx, s.Pool); err != nil {
 		return st, err
 	}
+	if st.Adjusts, err = repo.StockAdjusts(ctx, s.Pool); err != nil {
+		return st, err
+	}
 	if st.APIKeys, err = repo.ListAPIKeys(ctx, s.Pool); err != nil {
 		return st, err
 	}
@@ -268,6 +271,90 @@ func (s *Service) OpenNextPeriod(ctx context.Context, actor, start string) (mode
 			return err
 		}
 		return repo.Audit(ctx, tx, "period", id, "open", actor, nil, out)
+	})
+	return out, err
+}
+
+// SetStock corrects a product's current stock in any period (a stock count). The difference is stored as that
+// period's adjustment, so the period's figures and every later period's opening follow.
+func (s *Service) SetStock(ctx context.Context, actor string, periodID, productID int64, qty Flex) (models.StockRow, error) {
+	var out models.StockRow
+	v, ok := qty.int()
+	if !ok {
+		return out, &ValidationError{Fields: map[string]string{"qty": "Số lượng tồn phải là số nguyên."}}
+	}
+	err := s.tx(ctx, func(tx pgx.Tx) error {
+		p, err := s.resolvePeriod(ctx, tx, periodID)
+		if err != nil {
+			return err
+		}
+		before, err := stockRow(ctx, tx, p.ID, productID)
+		if err != nil {
+			return err
+		}
+		if err := repo.AddStockAdjust(ctx, tx, p.ID, productID, int(v)-before.Current); err != nil {
+			return err
+		}
+		if out, err = stockRow(ctx, tx, p.ID, productID); err != nil {
+			return err
+		}
+		return repo.Audit(ctx, tx, "stock", fmt.Sprintf("%d:%d", p.ID, productID), "adjust", actor, before, out)
+	})
+	return out, err
+}
+
+func stockRow(ctx context.Context, db repo.DB, periodID, productID int64) (models.StockRow, error) {
+	rows, err := repo.Stock(ctx, db, periodID)
+	if err != nil {
+		return models.StockRow{}, err
+	}
+	for _, r := range rows {
+		if r.ProductID == productID {
+			return r, nil
+		}
+	}
+	return models.StockRow{}, ErrNotFound
+}
+
+// SetPeriodTotals corrects a period's total cost and/or total revenue (cumulative, as on the dashboard). The
+// difference is stored as the period's adjustment; profit and every later period follow.
+func (s *Service) SetPeriodTotals(ctx context.Context, actor string, periodID int64, cost, revenue Flex) (models.Totals, error) {
+	var out models.Totals
+	e := map[string]string{}
+	c, cOK := cost.int()
+	if !cost.empty() && (!cOK || c < 0) {
+		e["totalCost"] = "Tổng vốn phải là số nguyên ≥ 0."
+	}
+	r, rOK := revenue.int()
+	if !revenue.empty() && (!rOK || r < 0) {
+		e["totalRevenue"] = "Tổng doanh thu phải là số nguyên ≥ 0."
+	}
+	if len(e) > 0 {
+		return out, &ValidationError{Fields: e}
+	}
+	err := s.tx(ctx, func(tx pgx.Tx) error {
+		p, err := s.resolvePeriod(ctx, tx, periodID)
+		if err != nil {
+			return err
+		}
+		before, err := repo.PeriodTotals(ctx, tx, p.ID)
+		if err != nil {
+			return err
+		}
+		var dc, dr int64
+		if !cost.empty() {
+			dc = c - before.TotalCost
+		}
+		if !revenue.empty() {
+			dr = r - before.TotalRevenue
+		}
+		if err := repo.AddPeriodAdjust(ctx, tx, p.ID, dc, dr); err != nil {
+			return err
+		}
+		if out, err = repo.PeriodTotals(ctx, tx, p.ID); err != nil {
+			return err
+		}
+		return repo.Audit(ctx, tx, "period", p.ID, "adjust_totals", actor, before, out)
 	})
 	return out, err
 }

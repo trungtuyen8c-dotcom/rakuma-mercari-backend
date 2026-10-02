@@ -11,14 +11,14 @@ import (
 
 func Stock(ctx context.Context, db DB, periodID int64) ([]models.StockRow, error) {
 	rows, err := db.Query(ctx, `
-		SELECT row_number() OVER (ORDER BY product_id)::int, product_id, name, is_active, opening, incoming, sold, current
+		SELECT row_number() OVER (ORDER BY product_id)::int, product_id, name, is_active, opening, incoming, sold, adjust, current
 		FROM stock_by_period WHERE period_id = $1 ORDER BY product_id`, periodID)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (models.StockRow, error) {
 		var s models.StockRow
-		err := r.Scan(&s.STT, &s.ProductID, &s.Name, &s.Active, &s.Opening, &s.Incoming, &s.Sold, &s.Current)
+		err := r.Scan(&s.STT, &s.ProductID, &s.Name, &s.Active, &s.Opening, &s.Incoming, &s.Sold, &s.Adjust, &s.Current)
 		return s, err
 	})
 }
@@ -51,5 +51,35 @@ func UpsertOpening(ctx context.Context, db DB, periodID, productID int64, qty in
 	_, err := db.Exec(ctx, `
 		INSERT INTO stock_openings (period_id, product_id, qty) VALUES ($1, $2, $3)
 		ON CONFLICT (period_id, product_id) DO UPDATE SET qty = EXCLUDED.qty`, periodID, productID, qty)
+	return err
+}
+
+// StockAdjusts returns period id -> product id -> stock correction, for the UI's own stock math.
+func StockAdjusts(ctx context.Context, db DB) (map[string]map[string]int, error) {
+	rows, err := db.Query(ctx, `SELECT period_id, product_id, qty FROM stock_adjustments WHERE qty <> 0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]map[string]int{}
+	for rows.Next() {
+		var per, prod int64
+		var qty int
+		if err := rows.Scan(&per, &prod, &qty); err != nil {
+			return nil, err
+		}
+		k := strconv.FormatInt(per, 10)
+		if out[k] == nil {
+			out[k] = map[string]int{}
+		}
+		out[k][strconv.FormatInt(prod, 10)] = qty
+	}
+	return out, rows.Err()
+}
+
+func AddStockAdjust(ctx context.Context, db DB, periodID, productID int64, delta int) error {
+	_, err := db.Exec(ctx, `
+		INSERT INTO stock_adjustments (period_id, product_id, qty) VALUES ($1, $2, $3)
+		ON CONFLICT (period_id, product_id) DO UPDATE SET qty = stock_adjustments.qty + EXCLUDED.qty`, periodID, productID, delta)
 	return err
 }

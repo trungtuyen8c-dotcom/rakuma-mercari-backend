@@ -61,16 +61,13 @@ func writePeriod(ctx context.Context, db repo.DB, periodID, date string) (models
 	pick := opens[len(opens)-1]
 	switch {
 	case strings.TrimSpace(periodID) != "":
+		// The owner may write into any period, closed ones included; later periods follow (migration 0006)
 		id, _ := parseID(periodID)
-		found := false
-		for _, p := range opens {
-			if p.ID == id {
-				pick, found = p, true
-			}
+		p, err := repo.GetPeriod(ctx, db, id)
+		if err != nil {
+			return pick, map[string]string{"periodId": "Không tìm thấy kỳ này."}, nil
 		}
-		if !found {
-			return pick, map[string]string{"periodId": "Kỳ này đã chốt hoặc không tồn tại."}, nil
-		}
+		pick = p
 	case date != "":
 		if _, err := time.Parse("2006-01-02", date); err != nil {
 			return pick, map[string]string{"date": "Ngày không hợp lệ."}, nil
@@ -118,24 +115,72 @@ func (s *Service) AddPurchase(ctx context.Context, actor string, in PurchaseInpu
 	var out models.Purchase
 	err := s.tx(ctx, func(tx pgx.Tx) error {
 		var err error
-		out, err = s.addPurchase(ctx, tx, actor, in, force)
+		out, err = s.savePurchase(ctx, tx, actor, in, force, 0)
+		return err
+	})
+	return out, err
+}
+
+// UpdatePurchase replaces every field of a purchase, in any period. It stays in its period unless periodId says
+// otherwise; check/review marks are kept. Totals, stock and every later period follow from the rows.
+func (s *Service) UpdatePurchase(ctx context.Context, actor string, id int64, in PurchaseInput, force bool) (models.Purchase, error) {
+	var out models.Purchase
+	err := s.tx(ctx, func(tx pgx.Tx) error {
+		var err error
+		out, err = s.savePurchase(ctx, tx, actor, in, force, id)
 		return err
 	})
 	return out, err
 }
 
 func (s *Service) addPurchase(ctx context.Context, tx pgx.Tx, actor string, in PurchaseInput, force bool) (models.Purchase, error) {
+	return s.savePurchase(ctx, tx, actor, in, force, 0)
+}
+
+// rowPeriod picks the period for a new row (editID 0) or an edited one: an edit stays in its period unless
+// periodId moves it, and its date must fall inside that period.
+func rowPeriod(ctx context.Context, tx pgx.Tx, periodID, date string, current int64) (models.Period, map[string]string, error) {
+	if current == 0 || strings.TrimSpace(periodID) != "" {
+		return writePeriod(ctx, tx, periodID, date)
+	}
+	p, err := repo.GetPeriod(ctx, tx, current)
+	if err != nil {
+		return p, nil, err
+	}
+	if m := dateErr(date, p); m != "" {
+		return p, map[string]string{"date": m}, nil
+	}
+	return p, nil, nil
+}
+
+// productFor accepts an active product, or the row's current product even if it was deactivated since.
+func (s *Service) productFor(ctx context.Context, db repo.DB, id string, current int64) (models.Product, bool) {
+	if pid, ok := parseID(id); ok && pid == current {
+		p, err := repo.GetProduct(ctx, db, pid)
+		return p, err == nil
+	}
+	return s.activeProduct(ctx, db, id)
+}
+
+func (s *Service) savePurchase(ctx context.Context, tx pgx.Tx, actor string, in PurchaseInput, force bool, editID int64) (models.Purchase, error) {
 	var out models.Purchase
 	err := func() error {
+		var before models.Purchase
+		if editID > 0 {
+			var err error
+			if before, err = repo.GetPurchase(ctx, tx, editID); err != nil {
+				return notFound(err)
+			}
+		}
 		date := strings.TrimSpace(in.Date)
-		open, e, err := writePeriod(ctx, tx, in.PeriodID, date)
+		open, e, err := rowPeriod(ctx, tx, in.PeriodID, date, before.PeriodID)
 		if err != nil {
 			return err
 		}
 		if e == nil {
 			e = map[string]string{}
 		}
-		prod, ok := s.activeProduct(ctx, tx, in.ProductID)
+		prod, ok := s.productFor(ctx, tx, in.ProductID, before.ProductID)
 		if !ok {
 			e["productId"] = "Chọn sản phẩm có trong danh mục."
 		}
@@ -183,6 +228,7 @@ func (s *Service) addPurchase(ctx context.Context, tx pgx.Tx, actor string, in P
 				if err != nil {
 					return err
 				}
+				same = without(same, editID)
 				if len(same) > 0 {
 					w = append(w, fmt.Sprintf("Link này đã có ở dòng số %d (kỳ %s).", same[0].STT, same[0].PeriodLabel))
 				}
@@ -192,6 +238,7 @@ func (s *Service) addPurchase(ctx context.Context, tx pgx.Tx, actor string, in P
 				if err != nil {
 					return err
 				}
+				same = without(same, editID)
 				allMerged := true
 				refs := make([]string, 0, len(same))
 				for _, r := range same {
@@ -215,6 +262,16 @@ func (s *Service) addPurchase(ctx context.Context, tx pgx.Tx, actor string, in P
 			g := tracking
 			row.MergeGroup = &g
 		}
+		if editID > 0 {
+			row.Checked, row.Reviewed = before.Checked, before.Reviewed
+			if err := repo.UpdatePurchase(ctx, tx, editID, row); err != nil {
+				return err
+			}
+			if out, err = repo.GetPurchase(ctx, tx, editID); err != nil {
+				return err
+			}
+			return repo.Audit(ctx, tx, "purchase", editID, "update", actor, before, out)
+		}
 		id, err := repo.InsertPurchase(ctx, tx, row)
 		if err != nil {
 			return err
@@ -228,8 +285,18 @@ func (s *Service) addPurchase(ctx context.Context, tx pgx.Tx, actor string, in P
 	return out, err
 }
 
+func without(rows []models.Purchase, id int64) []models.Purchase {
+	out := rows[:0:0]
+	for _, r := range rows {
+		if r.ID != id {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // SetPurchaseFlags updates "checked" (received, GD-03), "reviewed" (seller rated) and/or the tracking number, which
-// often arrives after the row was written. Closed periods are read-only.
+// often arrives after the row was written. Any period, closed or open.
 func (s *Service) SetPurchaseFlags(ctx context.Context, actor string, id int64, checked, reviewed *bool, tracking *string) (models.Purchase, error) {
 	if tracking != nil {
 		if t := strings.TrimSpace(*tracking); t != "" && !reTracking.MatchString(t) {
@@ -241,9 +308,6 @@ func (s *Service) SetPurchaseFlags(ctx context.Context, actor string, id int64, 
 		before, err := repo.GetPurchase(ctx, tx, id)
 		if err != nil {
 			return notFound(err)
-		}
-		if before.Locked {
-			return ErrLocked
 		}
 		c, r := before.Checked, before.Reviewed
 		if checked != nil {
@@ -280,9 +344,6 @@ func (s *Service) DeletePurchase(ctx context.Context, actor string, id int64) er
 		if err != nil {
 			return notFound(err)
 		}
-		if before.Locked {
-			return ErrLocked
-		}
 		if err := repo.DeletePurchase(ctx, tx, id); err != nil {
 			return err
 		}
@@ -291,17 +352,33 @@ func (s *Service) DeletePurchase(ctx context.Context, actor string, id int64) er
 }
 
 func (s *Service) AddSale(ctx context.Context, actor string, in SaleInput, force bool) (models.Sale, error) {
+	return s.saveSale(ctx, actor, in, force, 0)
+}
+
+// UpdateSale replaces every field of a sale, in any period; later periods follow.
+func (s *Service) UpdateSale(ctx context.Context, actor string, id int64, in SaleInput, force bool) (models.Sale, error) {
+	return s.saveSale(ctx, actor, in, force, id)
+}
+
+func (s *Service) saveSale(ctx context.Context, actor string, in SaleInput, force bool, editID int64) (models.Sale, error) {
 	var out models.Sale
 	err := s.tx(ctx, func(tx pgx.Tx) error {
+		var before models.Sale
+		if editID > 0 {
+			var err error
+			if before, err = repo.GetSale(ctx, tx, editID); err != nil {
+				return notFound(err)
+			}
+		}
 		date := strings.TrimSpace(in.Date)
-		open, e, err := writePeriod(ctx, tx, in.PeriodID, date)
+		open, e, err := rowPeriod(ctx, tx, in.PeriodID, date, before.PeriodID)
 		if err != nil {
 			return err
 		}
 		if e == nil {
 			e = map[string]string{}
 		}
-		prod, ok := s.activeProduct(ctx, tx, in.ProductID)
+		prod, ok := s.productFor(ctx, tx, in.ProductID, before.ProductID)
 		if !ok {
 			e["productId"] = "Chọn sản phẩm có trong danh mục."
 		}
@@ -337,6 +414,9 @@ func (s *Service) AddSale(ctx context.Context, actor string, in SaleInput, force
 			if err != nil {
 				return err
 			}
+			if editID > 0 && before.PeriodID == open.ID && before.ProductID == prod.ID {
+				current += before.Qty // the edited row's own quantity is already taken out
+			}
 			if current-int(qty) < 0 {
 				w = append(w, fmt.Sprintf("Chỉ còn %d cái “%s”, bạn đang bán %d cái. Tồn kho sẽ âm %d cái.",
 					current, prod.Name, qty, int(qty)-current))
@@ -350,10 +430,20 @@ func (s *Service) AddSale(ctx context.Context, actor string, in SaleInput, force
 			note = OpenedStockNote
 		}
 
-		id, err := repo.InsertSale(ctx, tx, repo.SaleRow{
+		row := repo.SaleRow{
 			PeriodID: open.ID, Date: ptr(date), ProductID: prod.ID, Qty: int(qty), Price: price, Ship: ship,
 			Customer: strings.TrimSpace(in.Customer), Note: note,
-		})
+		}
+		if editID > 0 {
+			if err := repo.UpdateSale(ctx, tx, editID, row); err != nil {
+				return err
+			}
+			if out, err = repo.GetSale(ctx, tx, editID); err != nil {
+				return err
+			}
+			return repo.Audit(ctx, tx, "sale", editID, "update", actor, before, out)
+		}
+		id, err := repo.InsertSale(ctx, tx, row)
 		if err != nil {
 			return err
 		}
@@ -371,9 +461,6 @@ func (s *Service) DeleteSale(ctx context.Context, actor string, id int64) error 
 		before, err := repo.GetSale(ctx, tx, id)
 		if err != nil {
 			return notFound(err)
-		}
-		if before.Locked {
-			return ErrLocked
 		}
 		if err := repo.DeleteSale(ctx, tx, id); err != nil {
 			return err

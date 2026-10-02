@@ -13,12 +13,12 @@ const periodSelect = `
 SELECT id, label, to_char(start_date, 'YYYY-MM-DD'), to_char(end_date, 'YYYY-MM-DD'), status,
        (SELECT prev_cost FROM period_totals t WHERE t.period_id = periods.id),
        (SELECT prev_revenue FROM period_totals t WHERE t.period_id = periods.id),
-       closing_cost, closing_revenue, to_char(closed_at, 'YYYY-MM-DD')
+       adjust_cost, adjust_revenue, closing_cost, closing_revenue, to_char(closed_at, 'YYYY-MM-DD')
 FROM periods`
 
 func scanPeriod(row pgx.Row) (models.Period, error) {
 	var p models.Period
-	err := row.Scan(&p.ID, &p.Label, &p.Start, &p.End, &p.Status, &p.OpeningCost, &p.OpeningRevenue, &p.ClosingCost, &p.ClosingRevenue, &p.ClosedAt)
+	err := row.Scan(&p.ID, &p.Label, &p.Start, &p.End, &p.Status, &p.OpeningCost, &p.OpeningRevenue, &p.AdjustCost, &p.AdjustRevenue, &p.ClosingCost, &p.ClosingRevenue, &p.ClosedAt)
 	return p, err
 }
 
@@ -93,4 +93,9 @@ func PeriodTotals(ctx context.Context, db DB, periodID int64) (models.Totals, er
 		Scan(&t.PrevCost, &t.PrevRevenue, &t.PrevProfit, &t.PeriodCost, &t.PeriodRevenue, &t.PeriodProfit,
 			&t.TotalCost, &t.TotalRevenue, &t.TotalProfit, &t.SalesCount, &t.StockTotal)
 	return t, err
+}
+
+func AddPeriodAdjust(ctx context.Context, db DB, id, cost, revenue int64) error {
+	_, err := db.Exec(ctx, `UPDATE periods SET adjust_cost = adjust_cost + $2, adjust_revenue = adjust_revenue + $3 WHERE id = $1`, id, cost, revenue)
+	return err
 }

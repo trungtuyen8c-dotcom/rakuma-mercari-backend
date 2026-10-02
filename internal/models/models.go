@@ -17,6 +17,8 @@ type Period struct {
 	Status         string  `json:"status"`
 	OpeningCost    int64   `json:"openingCost"`
 	OpeningRevenue int64   `json:"openingRevenue"`
+	AdjustCost     int64   `json:"adjustCost"`    // owner's correction to the period's total cost
+	AdjustRevenue  int64   `json:"adjustRevenue"` // and to its total revenue
 	ClosingCost    *int64  `json:"closingCost"`
 	ClosingRevenue *int64  `json:"closingRevenue"`
 	ClosedAt       *string `json:"closedAt"`
@@ -71,6 +73,7 @@ type StockRow struct {
 	Opening   int    `json:"opening"`
 	Incoming  int    `json:"incoming"`
 	Sold      int    `json:"sold"`
+	Adjust    int    `json:"adjust"` // owner's stock correction in this period
 	Current   int    `json:"current"`
 }
 
@@ -151,6 +154,7 @@ type State struct {
 	Sales     []Sale                    `json:"sales"`
 	Periods   []Period                  `json:"periods"`
 	Openings  map[string]map[string]int `json:"openings"`
+	Adjusts   map[string]map[string]int `json:"stockAdjusts"`
 	APIKeys   []APIKey                  `json:"apiKeys"`
 	Settings  Settings                  `json:"settings"`
 	User      *User                     `json:"user"`

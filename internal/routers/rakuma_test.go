@@ -85,12 +85,12 @@ func TestRakumaApproveCreatesPurchaseAndTracksLater(t *testing.T) {
 		t.Fatalf("tracking not copied: %v", got)
 	}
 
-	// After the period closes the purchase is read-only, so tracking is no longer copied
+	// Closed periods stay editable (owner decision 2026-10-03), so a later tracking number is still copied
 	e.ok("POST", "/api/v1/periods/close", nil, 200)
 	e.sync("", rakumaOrder("A1", map[string]any{"tracking": "TRK-2"}))
 	got = e.ok("GET", "/api/v1/purchases", nil, 200)["_"].([]any)[0].(map[string]any)
-	if got["tracking"] != "TRK-1" {
-		t.Fatalf("closed purchase changed: %v", got)
+	if got["tracking"] != "TRK-2" {
+		t.Fatalf("closed purchase not updated: %v", got)
 	}
 }
 

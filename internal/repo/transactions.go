@@ -87,6 +87,16 @@ func InsertPurchase(ctx context.Context, db DB, r PurchaseRow) (int64, error) {
 	return id, err
 }
 
+func UpdatePurchase(ctx context.Context, db DB, id int64, r PurchaseRow) error {
+	_, err := db.Exec(ctx, `
+		UPDATE purchases SET period_id = $2, source = $3, order_date = $4, item_url = $5, product_id = $6, unit_price = $7,
+		       quantity = $8, unit_discount = $9, tracking_no = $10, merge_group = $11, is_checked = $12, is_reviewed = $13,
+		       note = $14, updated_at = now()
+		WHERE id = $1`,
+		id, r.PeriodID, r.Source, r.Date, r.Link, r.ProductID, r.Price, r.Qty, r.Discount, r.Tracking, r.MergeGroup, r.Checked, r.Reviewed, r.Note)
+	return err
+}
+
 func SetPurchaseFlags(ctx context.Context, db DB, id int64, checked, reviewed bool) error {
 	_, err := db.Exec(ctx, `UPDATE purchases SET is_checked = $2, is_reviewed = $3, updated_at = now() WHERE id = $1`, id, checked, reviewed)
 	return err
@@ -144,6 +154,15 @@ func InsertSale(ctx context.Context, db DB, r SaleRow) (int64, error) {
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
 		r.PeriodID, r.Date, r.ProductID, r.Qty, r.Price, r.Ship, r.Customer, r.Note).Scan(&id)
 	return id, err
+}
+
+func UpdateSale(ctx context.Context, db DB, id int64, r SaleRow) error {
+	_, err := db.Exec(ctx, `
+		UPDATE sales SET period_id = $2, sale_date = $3, product_id = $4, quantity = $5, unit_price = $6, shipping_fee = $7,
+		       customer_name = $8, note = $9, updated_at = now()
+		WHERE id = $1`,
+		id, r.PeriodID, r.Date, r.ProductID, r.Qty, r.Price, r.Ship, r.Customer, r.Note)
+	return err
 }
 
 func DeleteSale(ctx context.Context, db DB, id int64) error {
