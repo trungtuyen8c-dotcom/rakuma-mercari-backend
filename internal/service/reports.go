@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -209,8 +210,10 @@ func (s *Service) State(ctx context.Context, user *models.User) (models.State, e
 }
 
 // OpenNextPeriod opens the month after the latest period while the current one stays open, so new orders can be
-// recorded in the new month before old ones are finished. At most two periods may be open.
-func (s *Service) OpenNextPeriod(ctx context.Context, actor string) (models.Period, error) {
+// recorded in the new month before old ones are finished. At most two periods may be open. start (optional,
+// YYYY-MM-DD) is the owner's cut-off: the new period begins that day and the latest period's end moves to the day
+// before, e.g. "today still counts as September, October starts tomorrow".
+func (s *Service) OpenNextPeriod(ctx context.Context, actor, start string) (models.Period, error) {
 	var out models.Period
 	err := s.tx(ctx, func(tx pgx.Tx) error {
 		opens, err := repo.OpenPeriods(ctx, tx, true)
@@ -228,12 +231,36 @@ func (s *Service) OpenNextPeriod(ctx context.Context, actor string) (models.Peri
 		if err != nil {
 			return err
 		}
-		start, end, err := MonthRange(label)
+		monthStart, end, err := MonthRange(label)
 		if err != nil {
 			return err
 		}
+		prevEnd, _ := time.Parse("2006-01-02", latest.End)
+		from := prevEnd.AddDate(0, 0, 1).Format("2006-01-02")
+		if from < monthStart {
+			from = monthStart
+		}
+		if start = strings.TrimSpace(start); start != "" {
+			if _, err := time.Parse("2006-01-02", start); err != nil || start <= latest.Start || start > end {
+				return &ValidationError{Fields: map[string]string{"start": fmt.Sprintf("Ngày bắt đầu kỳ %s phải sau %s và không quá %s.", label, latest.Start, end)}}
+			}
+			cut, _ := time.Parse("2006-01-02", start)
+			newEnd := cut.AddDate(0, 0, -1).Format("2006-01-02")
+			var late int
+			if err := tx.QueryRow(ctx, `SELECT (SELECT COUNT(*) FROM purchases WHERE period_id = $1 AND order_date > $2)
+				+ (SELECT COUNT(*) FROM sales WHERE period_id = $1 AND sale_date > $2)`, latest.ID, newEnd).Scan(&late); err != nil {
+				return err
+			}
+			if late > 0 {
+				return &ConflictError{Msg: fmt.Sprintf("Kỳ %s có %d dòng ghi ngày sau %s, không thể bắt đầu kỳ %s từ %s.", latest.Label, late, newEnd, label, start)}
+			}
+			if _, err := tx.Exec(ctx, `UPDATE periods SET end_date = $2 WHERE id = $1`, latest.ID, newEnd); err != nil {
+				return err
+			}
+			from = start
+		}
 		// Opening figures stay 0 here: they are derived from the open period until it closes (migration 0005)
-		id, err := repo.InsertPeriod(ctx, tx, label, start, end, 0, 0)
+		id, err := repo.InsertPeriod(ctx, tx, label, from, end, 0, 0)
 		if err != nil {
 			return err
 		}

@@ -228,8 +228,14 @@ func (s *Service) addPurchase(ctx context.Context, tx pgx.Tx, actor string, in P
 	return out, err
 }
 
-// SetPurchaseFlags updates "checked" (received, GD-03) and/or "reviewed" (seller rated). Closed periods are read-only.
-func (s *Service) SetPurchaseFlags(ctx context.Context, actor string, id int64, checked, reviewed *bool) (models.Purchase, error) {
+// SetPurchaseFlags updates "checked" (received, GD-03), "reviewed" (seller rated) and/or the tracking number, which
+// often arrives after the row was written. Closed periods are read-only.
+func (s *Service) SetPurchaseFlags(ctx context.Context, actor string, id int64, checked, reviewed *bool, tracking *string) (models.Purchase, error) {
+	if tracking != nil {
+		if t := strings.TrimSpace(*tracking); t != "" && !reTracking.MatchString(t) {
+			return models.Purchase{}, &ValidationError{Fields: map[string]string{"tracking": "Mã vận đơn chỉ gồm chữ, số và dấu gạch."}}
+		}
+	}
 	var out models.Purchase
 	err := s.tx(ctx, func(tx pgx.Tx) error {
 		before, err := repo.GetPurchase(ctx, tx, id)
@@ -248,6 +254,16 @@ func (s *Service) SetPurchaseFlags(ctx context.Context, actor string, id int64, 
 		}
 		if err := repo.SetPurchaseFlags(ctx, tx, id, c, r); err != nil {
 			return err
+		}
+		if tracking != nil {
+			if t := strings.TrimSpace(*tracking); t == "" {
+				_, err = tx.Exec(ctx, `UPDATE purchases SET tracking_no = NULL, updated_at = now() WHERE id = $1`, id)
+			} else {
+				err = repo.SetPurchaseTracking(ctx, tx, id, t)
+			}
+			if err != nil {
+				return err
+			}
 		}
 		out, err = repo.GetPurchase(ctx, tx, id)
 		if err != nil {

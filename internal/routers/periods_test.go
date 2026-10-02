@@ -77,3 +77,41 @@ func TestOpenNextPeriodWhileCurrentStaysOpen(t *testing.T) {
 	// With one open period again, the next month can be opened
 	e.ok("POST", "/api/v1/periods/open-next", nil, 201)
 }
+
+// "Today still counts as September, October starts tomorrow": the cut-off moves September's end.
+func TestOpenNextPeriodWithCutOff(t *testing.T) {
+	e := setup(t)
+	write := e.ok("POST", "/api/v1/api-keys", map[string]string{"name": "claude", "scope": "write"}, 201)["key"].(string)
+	pid := e.product("ninja")
+	p := e.ok("POST", "/api/v1/purchases", purchase(pid, 1000, 2, 0, map[string]any{"date": "2026-09-30"}), 201)
+
+	e.ok("POST", "/api/v1/periods/open-next", map[string]string{"start": "2026-09-30"}, 409) // a September row is dated 30/09
+	e.ok("POST", "/api/v1/periods/open-next", map[string]string{"start": "2026-11-01"}, 422)
+	res := e.do("POST", "/api/v1/periods/open-next", map[string]string{"start": "2026-10-03"}, write)
+	if res.Code != 201 {
+		t.Fatalf("open with cut-off: %d %s", res.Code, res.Body)
+	}
+	periods := e.ok("GET", "/api/v1/periods", nil, 200)["_"].([]any)
+	sep, oct := periods[0].(map[string]any), periods[1].(map[string]any)
+	if sep["end"] != "2026-10-02" || oct["start"] != "2026-10-03" || oct["end"] != "2026-10-31" {
+		t.Fatalf("cut-off: %v %v", sep, oct)
+	}
+	if s := e.ok("POST", "/api/v1/sales", map[string]any{"productId": pid, "qty": 1, "price": 2000, "date": "2026-10-02"}, 201); s["periodLabel"] != "09/2026" {
+		t.Fatalf("2/10 sale: %v", s)
+	}
+	if s := e.ok("POST", "/api/v1/sales", map[string]any{"productId": pid, "qty": 1, "price": 2000, "date": "2026-10-03"}, 201); s["periodLabel"] != "10/2026" {
+		t.Fatalf("3/10 sale: %v", s)
+	}
+
+	// A write key can tick a purchase and add its tracking number later
+	id := p["id"].(string)
+	res = e.do("PATCH", "/api/v1/purchases/"+id, map[string]any{"checked": true, "reviewed": true, "tracking": "623160585353"}, write)
+	if res.Code != 200 {
+		t.Fatalf("write patch: %d %s", res.Code, res.Body)
+	}
+	got := e.ok("GET", "/api/v1/purchases", nil, 200)["_"].([]any)[0].(map[string]any)
+	if got["checked"] != true || got["reviewed"] != true || got["tracking"] != "623160585353" {
+		t.Fatalf("patched: %v", got)
+	}
+	e.ok("PATCH", "/api/v1/purchases/"+id, map[string]any{"tracking": "bad no!"}, 422)
+}

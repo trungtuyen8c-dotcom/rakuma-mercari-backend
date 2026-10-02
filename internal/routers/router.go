@@ -13,7 +13,7 @@ import (
 // New wires routes. Access levels:
 //
 //	read  = owner session or any API key      (GET reports and lists)
-//	write = owner session or "write" API key  (add products, purchases, sales; Rakuma sync; open next month)
+//	write = owner session or "write" API key  (add products, purchases, sales; tick/track purchases; Rakuma sync; open next month)
 //	owner = owner session only                (edit/delete, stock opening, close period, settings, API keys)
 func New(svc *service.Service) *gin.Engine {
 	r := gin.New()
@@ -54,6 +54,7 @@ func New(svc *service.Service) *gin.Engine {
 	write.POST("/sales", h.CreateSale)
 	write.POST("/rakuma/sync", h.SyncRakuma)
 	write.POST("/periods/open-next", h.OpenNextPeriod)
+	write.PATCH("/purchases/:id", h.UpdatePurchase)
 	write.POST("/rakuma/replies/:id/sent", h.MarkRakumaReplySent)
 	write.POST("/rakuma/replies/:id/skip", h.SkipRakumaReply)
 
@@ -62,7 +63,6 @@ func New(svc *service.Service) *gin.Engine {
 	owner.PUT("/auth/password", a.ChangePassword)
 	owner.PATCH("/products/:id", h.UpdateProduct)
 	owner.DELETE("/products/:id", h.DeleteProduct)
-	owner.PATCH("/purchases/:id", h.UpdatePurchase)
 	owner.DELETE("/purchases/:id", h.DeletePurchase)
 	owner.DELETE("/sales/:id", h.DeleteSale)
 	owner.PUT("/stock/:product_id/opening", h.SetOpening)

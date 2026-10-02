@@ -107,13 +107,14 @@ func (h *Handlers) UpdatePurchase(c *gin.Context) {
 		return
 	}
 	var in struct {
-		Checked  *bool `json:"checked"`
-		Reviewed *bool `json:"reviewed"`
+		Checked  *bool   `json:"checked"`
+		Reviewed *bool   `json:"reviewed"`
+		Tracking *string `json:"tracking"`
 	}
 	if !bind(c, &in) {
 		return
 	}
-	out, err := h.Svc.SetPurchaseFlags(c.Request.Context(), actor(c), id, in.Checked, in.Reviewed)
+	out, err := h.Svc.SetPurchaseFlags(c.Request.Context(), actor(c), id, in.Checked, in.Reviewed, in.Tracking)
 	if err != nil {
 		fail(c, err)
 		return
@@ -483,7 +484,13 @@ func (h *Handlers) SkipRakumaReply(c *gin.Context) {
 }
 
 func (h *Handlers) OpenNextPeriod(c *gin.Context) {
-	out, err := h.Svc.OpenNextPeriod(c.Request.Context(), actor(c))
+	var in struct {
+		Start string `json:"start"`
+	}
+	if c.Request.ContentLength > 0 && !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.OpenNextPeriod(c.Request.Context(), actor(c), in.Start)
 	if err != nil {
 		fail(c, err)
 		return
