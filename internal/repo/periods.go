@@ -8,9 +8,12 @@ import (
 	"github.com/trungtuyen8c-dotcom/rakuma-mercari-backend/internal/models"
 )
 
+// Opening figures come from period_totals, so a period whose predecessor is still open shows them live.
 const periodSelect = `
 SELECT id, label, to_char(start_date, 'YYYY-MM-DD'), to_char(end_date, 'YYYY-MM-DD'), status,
-       opening_cost, opening_revenue, closing_cost, closing_revenue, to_char(closed_at, 'YYYY-MM-DD')
+       (SELECT prev_cost FROM period_totals t WHERE t.period_id = periods.id),
+       (SELECT prev_revenue FROM period_totals t WHERE t.period_id = periods.id),
+       closing_cost, closing_revenue, to_char(closed_at, 'YYYY-MM-DD')
 FROM periods`
 
 func scanPeriod(row pgx.Row) (models.Period, error) {
@@ -31,13 +34,40 @@ func GetPeriod(ctx context.Context, db DB, id int64) (models.Period, error) {
 	return scanPeriod(db.QueryRow(ctx, periodSelect+` WHERE id = $1`, id))
 }
 
-// OpenPeriod returns the single OPEN period; forUpdate locks it for the rest of the transaction.
-func OpenPeriod(ctx context.Context, db DB, forUpdate bool) (models.Period, error) {
-	q := periodSelect + ` WHERE status = 'OPEN'`
+// OpenPeriods returns the OPEN periods oldest first (at most two); forUpdate locks them for the transaction.
+func OpenPeriods(ctx context.Context, db DB, forUpdate bool) ([]models.Period, error) {
+	q := periodSelect + ` WHERE status = 'OPEN' ORDER BY start_date`
 	if forUpdate {
-		q += ` FOR UPDATE`
+		q += ` FOR UPDATE OF periods`
 	}
-	return scanPeriod(db.QueryRow(ctx, q))
+	rows, err := db.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (models.Period, error) { return scanPeriod(r) })
+	if err == nil && len(out) == 0 {
+		err = pgx.ErrNoRows
+	}
+	return out, err
+}
+
+// OpenPeriod returns the newest OPEN period: where new rows go when no date or period is given.
+func OpenPeriod(ctx context.Context, db DB, forUpdate bool) (models.Period, error) {
+	open, err := OpenPeriods(ctx, db, forUpdate)
+	if err != nil {
+		return models.Period{}, err
+	}
+	return open[len(open)-1], nil
+}
+
+func LatestPeriod(ctx context.Context, db DB) (models.Period, error) {
+	return scanPeriod(db.QueryRow(ctx, periodSelect+` ORDER BY start_date DESC LIMIT 1`))
+}
+
+// SetOpeningFigures stores a period's opening money once its predecessor closes (BR-14).
+func SetOpeningFigures(ctx context.Context, db DB, id, cost, revenue int64) error {
+	_, err := db.Exec(ctx, `UPDATE periods SET opening_cost = $2, opening_revenue = $3 WHERE id = $1`, id, cost, revenue)
+	return err
 }
 
 func InsertPeriod(ctx context.Context, db DB, label, start, end string, openingCost, openingRevenue int64) (int64, error) {

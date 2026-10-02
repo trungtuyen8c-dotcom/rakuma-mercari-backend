@@ -25,7 +25,8 @@ func Stock(ctx context.Context, db DB, periodID int64) ([]models.StockRow, error
 
 // Openings returns period id -> product id -> opening qty, keyed by string ids for JSON.
 func Openings(ctx context.Context, db DB) (map[string]map[string]int, error) {
-	rows, err := db.Query(ctx, `SELECT period_id, product_id, qty FROM stock_openings`)
+	// From the view, so a period whose predecessor is still open reports its live opening stock
+	rows, err := db.Query(ctx, `SELECT period_id, product_id, opening FROM stock_by_period`)
 	if err != nil {
 		return nil, err
 	}

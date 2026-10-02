@@ -481,3 +481,12 @@ func (h *Handlers) SkipRakumaReply(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, out)
 }
+
+func (h *Handlers) OpenNextPeriod(c *gin.Context) {
+	out, err := h.Svc.OpenNextPeriod(c.Request.Context(), actor(c))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, out)
+}

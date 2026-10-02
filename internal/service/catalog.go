@@ -34,12 +34,14 @@ func (s *Service) AddProduct(ctx context.Context, actor, name string) (models.Pr
 		if err != nil {
 			return err
 		}
-		open, err := repo.OpenPeriod(ctx, tx, false)
+		opens, err := repo.OpenPeriods(ctx, tx, false)
 		if err != nil {
 			return err
 		}
-		if err := repo.UpsertOpening(ctx, tx, open.ID, id, 0); err != nil {
-			return err
+		for _, open := range opens {
+			if err := repo.UpsertOpening(ctx, tx, open.ID, id, 0); err != nil {
+				return err
+			}
 		}
 		out, err = repo.GetProduct(ctx, tx, id)
 		if err != nil {
@@ -101,7 +103,8 @@ func (s *Service) DeleteProduct(ctx context.Context, actor string, id int64) err
 	})
 }
 
-// SetOpening edits the open period's opening stock after a stock count (§4.5 step 3).
+// SetOpening edits the oldest open period's opening stock after a stock count (§4.5 step 3). A later open period
+// derives its opening from that one, so it has no stored opening to edit.
 func (s *Service) SetOpening(ctx context.Context, actor string, productID int64, qty Flex) error {
 	v, ok := qty.int()
 	if !ok || v < 0 {
@@ -111,10 +114,11 @@ func (s *Service) SetOpening(ctx context.Context, actor string, productID int64,
 		if _, err := repo.GetProduct(ctx, tx, productID); err != nil {
 			return notFound(err)
 		}
-		open, err := repo.OpenPeriod(ctx, tx, true)
+		opens, err := repo.OpenPeriods(ctx, tx, true)
 		if err != nil {
 			return err
 		}
+		open := opens[0]
 		var before int
 		_ = tx.QueryRow(ctx, `SELECT qty FROM stock_openings WHERE period_id = $1 AND product_id = $2`, open.ID, productID).Scan(&before)
 		if err := repo.UpsertOpening(ctx, tx, open.ID, productID, int(v)); err != nil {

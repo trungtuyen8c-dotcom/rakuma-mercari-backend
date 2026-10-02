@@ -117,18 +117,20 @@ func MonthRange(label string) (string, string, error) {
 	return t.Format("2006-01-02"), t.AddDate(0, 1, -1).Format("2006-01-02"), nil
 }
 
-// ClosePeriod (§4.7, BR-14): stores closing totals, opens the next month with those totals as its opening figures,
-// and carries each product's current stock into the new period's openings. The old period becomes read-only.
+// ClosePeriod (§4.7, BR-14): closes the oldest open period, stores its closing totals, and makes them the next
+// month's opening figures, carrying each product's current stock into that month's openings. The next month is
+// created unless the owner already opened it early. The closed period becomes read-only.
 func (s *Service) ClosePeriod(ctx context.Context, actor string) (models.Period, error) {
 	var next models.Period
 	err := s.tx(ctx, func(tx pgx.Tx) error {
-		open, err := repo.OpenPeriod(ctx, tx, true)
+		opens, err := repo.OpenPeriods(ctx, tx, true)
 		if err != nil {
 			if err == pgx.ErrNoRows {
 				return &ConflictError{Msg: "Không có kỳ nào đang mở."} // E8
 			}
 			return err
 		}
+		open := opens[0]
 		t, err := repo.PeriodTotals(ctx, tx, open.ID)
 		if err != nil {
 			return err
@@ -148,7 +150,13 @@ func (s *Service) ClosePeriod(ctx context.Context, actor string) (models.Period,
 		if err := repo.ClosePeriod(ctx, tx, open.ID, t.TotalCost, t.TotalRevenue); err != nil {
 			return err
 		}
-		id, err := repo.InsertPeriod(ctx, tx, label, start, end, t.TotalCost, t.TotalRevenue)
+		var id int64
+		if len(opens) > 1 {
+			id = opens[1].ID
+			err = repo.SetOpeningFigures(ctx, tx, id, t.TotalCost, t.TotalRevenue)
+		} else {
+			id, err = repo.InsertPeriod(ctx, tx, label, start, end, t.TotalCost, t.TotalRevenue)
+		}
 		if err != nil {
 			return err
 		}
@@ -198,4 +206,41 @@ func (s *Service) State(ctx context.Context, user *models.User) (models.State, e
 	}
 	st.User = user
 	return st, nil
+}
+
+// OpenNextPeriod opens the month after the latest period while the current one stays open, so new orders can be
+// recorded in the new month before old ones are finished. At most two periods may be open.
+func (s *Service) OpenNextPeriod(ctx context.Context, actor string) (models.Period, error) {
+	var out models.Period
+	err := s.tx(ctx, func(tx pgx.Tx) error {
+		opens, err := repo.OpenPeriods(ctx, tx, true)
+		if err != nil {
+			return err
+		}
+		if len(opens) > 1 {
+			return &ConflictError{Msg: fmt.Sprintf("Đang mở 2 kỳ (%s, %s). Chốt kỳ %s trước khi mở kỳ mới.", opens[0].Label, opens[1].Label, opens[0].Label)}
+		}
+		latest, err := repo.LatestPeriod(ctx, tx)
+		if err != nil {
+			return err
+		}
+		label, err := NextPeriodLabel(latest.Label)
+		if err != nil {
+			return err
+		}
+		start, end, err := MonthRange(label)
+		if err != nil {
+			return err
+		}
+		// Opening figures stay 0 here: they are derived from the open period until it closes (migration 0005)
+		id, err := repo.InsertPeriod(ctx, tx, label, start, end, 0, 0)
+		if err != nil {
+			return err
+		}
+		if out, err = repo.GetPeriod(ctx, tx, id); err != nil {
+			return err
+		}
+		return repo.Audit(ctx, tx, "period", id, "open", actor, nil, out)
+	})
+	return out, err
 }

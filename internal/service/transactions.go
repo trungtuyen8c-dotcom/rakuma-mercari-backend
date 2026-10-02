@@ -19,6 +19,7 @@ var (
 )
 
 type PurchaseInput struct {
+	PeriodID  string `json:"periodId"` // optional: an open period; otherwise picked from the date, else the newest open one
 	ProductID string `json:"productId"`
 	Source    string `json:"source"`
 	Date      string `json:"date"`
@@ -35,6 +36,7 @@ type PurchaseInput struct {
 const OpenedStockNote = "Bóc hàng"
 
 type SaleInput struct {
+	PeriodID  string `json:"periodId"`
 	ProductID string `json:"productId"`
 	Date      string `json:"date"`
 	Qty       Flex   `json:"qty"`
@@ -42,6 +44,51 @@ type SaleInput struct {
 	Ship      Flex   `json:"ship"`
 	Customer  string `json:"customer"`
 	Note      string `json:"note"`
+}
+
+// writePeriod picks the open period a new row goes to. Up to two periods can be open (an old month finishing while
+// the next one has started): an explicit periodId wins, then the period containing the date, then the newest one.
+// Errors are keyed by form field.
+func writePeriod(ctx context.Context, db repo.DB, periodID, date string) (models.Period, map[string]string, error) {
+	opens, err := repo.OpenPeriods(ctx, db, false)
+	if err != nil {
+		return models.Period{}, nil, err
+	}
+	labels := make([]string, len(opens))
+	for i, p := range opens {
+		labels[i] = p.Label
+	}
+	pick := opens[len(opens)-1]
+	switch {
+	case strings.TrimSpace(periodID) != "":
+		id, _ := parseID(periodID)
+		found := false
+		for _, p := range opens {
+			if p.ID == id {
+				pick, found = p, true
+			}
+		}
+		if !found {
+			return pick, map[string]string{"periodId": "Kỳ này đã chốt hoặc không tồn tại."}, nil
+		}
+	case date != "":
+		if _, err := time.Parse("2006-01-02", date); err != nil {
+			return pick, map[string]string{"date": "Ngày không hợp lệ."}, nil
+		}
+		found := false
+		for _, p := range opens {
+			if date >= p.Start && date <= p.End {
+				pick, found = p, true
+			}
+		}
+		if !found {
+			return pick, map[string]string{"date": fmt.Sprintf("Ngày phải nằm trong kỳ đang mở (%s). Kỳ khác đã chốt hoặc chưa mở.", strings.Join(labels, ", "))}, nil
+		}
+	}
+	if m := dateErr(date, pick); m != "" {
+		return pick, map[string]string{"date": m}, nil
+	}
+	return pick, nil, nil
 }
 
 // dateErr: optional date, must be valid and inside the open period (Q-10: a period is a calendar month).
@@ -80,11 +127,14 @@ func (s *Service) AddPurchase(ctx context.Context, actor string, in PurchaseInpu
 func (s *Service) addPurchase(ctx context.Context, tx pgx.Tx, actor string, in PurchaseInput, force bool) (models.Purchase, error) {
 	var out models.Purchase
 	err := func() error {
-		open, err := repo.OpenPeriod(ctx, tx, false)
+		date := strings.TrimSpace(in.Date)
+		open, e, err := writePeriod(ctx, tx, in.PeriodID, date)
 		if err != nil {
 			return err
 		}
-		e := map[string]string{}
+		if e == nil {
+			e = map[string]string{}
+		}
 		prod, ok := s.activeProduct(ctx, tx, in.ProductID)
 		if !ok {
 			e["productId"] = "Chọn sản phẩm có trong danh mục."
@@ -107,10 +157,6 @@ func (s *Service) addPurchase(ctx context.Context, tx pgx.Tx, actor string, in P
 		}
 		if e["discount"] == "" && e["price"] == "" && disc > price {
 			e["discount"] = "Giảm giá không được lớn hơn giá nhập." // E4
-		}
-		date := strings.TrimSpace(in.Date)
-		if m := dateErr(date, open); m != "" {
-			e["date"] = m
 		}
 		link, tracking := strings.TrimSpace(in.Link), strings.TrimSpace(in.Tracking)
 		if link != "" && !reLink.MatchString(link) {
@@ -231,11 +277,14 @@ func (s *Service) DeletePurchase(ctx context.Context, actor string, id int64) er
 func (s *Service) AddSale(ctx context.Context, actor string, in SaleInput, force bool) (models.Sale, error) {
 	var out models.Sale
 	err := s.tx(ctx, func(tx pgx.Tx) error {
-		open, err := repo.OpenPeriod(ctx, tx, false)
+		date := strings.TrimSpace(in.Date)
+		open, e, err := writePeriod(ctx, tx, in.PeriodID, date)
 		if err != nil {
 			return err
 		}
-		e := map[string]string{}
+		if e == nil {
+			e = map[string]string{}
+		}
 		prod, ok := s.activeProduct(ctx, tx, in.ProductID)
 		if !ok {
 			e["productId"] = "Chọn sản phẩm có trong danh mục."
@@ -255,10 +304,6 @@ func (s *Service) AddSale(ctx context.Context, actor string, in SaleInput, force
 				e["ship"] = "Phí ship phải là số nguyên ≥ 0."
 			}
 			ship = v
-		}
-		date := strings.TrimSpace(in.Date)
-		if m := dateErr(date, open); m != "" {
-			e["date"] = m
 		}
 		if len(e) > 0 {
 			return &ValidationError{Fields: e}
