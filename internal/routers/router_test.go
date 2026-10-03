@@ -360,16 +360,22 @@ func TestAC12_ClosedPeriodIsReadOnly(t *testing.T) {
 	}
 }
 
-func TestAC13_AnalysisLIFO(t *testing.T) {
+func TestAC13_AnalysisFIFO(t *testing.T) {
 	e := setup(t)
 	pid := e.product("30th Celebration")
 	e.ok("POST", "/api/v1/purchases", purchase(pid, 100, 5, 0, nil), 201)
 	e.ok("POST", "/api/v1/purchases", purchase(pid, 250, 3, 50, nil), 201)
-	e.ok("POST", "/api/v1/sales", map[string]any{"productId": pid, "qty": 6, "price": 400}, 201)
+	// A dated purchase in the middle of the month is newer than the period's undated rows
+	e.ok("POST", "/api/v1/purchases", purchase(pid, 80, 4, 0, map[string]any{"date": "2026-09-20"}), 201)
+	e.ok("POST", "/api/v1/sales", map[string]any{"productId": pid, "qty": 7, "price": 400}, 201)
 	a := e.ok("GET", "/api/v1/analysis/products/"+pid, nil, 200)
-	// LIFO: 3 from the latest lot at 200, then 3 from the older lot at 100
-	if num(a["cogs"]) != 900 || num(a["profit"]) != 1500 || num(a["uncovered"]) != 0 || len(a["lots"].([]any)) != 2 {
+	// FIFO: 5 from the oldest lot at 100, then 2 of the 3 at 200; the dated lot at 80 is not reached
+	lots := a["lots"].([]any)
+	if num(a["cogs"]) != 900 || num(a["profit"]) != 1900 || num(a["uncovered"]) != 0 || len(lots) != 2 {
 		t.Fatalf("analysis=%v", a)
+	}
+	if l := lots[1].(map[string]any); num(l["take"]) != 2 || num(l["unitCost"]) != 200 {
+		t.Fatalf("last lot=%v", l)
 	}
 }
 

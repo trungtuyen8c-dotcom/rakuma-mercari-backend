@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -55,7 +56,8 @@ func (s *Service) Dashboard(ctx context.Context, periodID int64) (models.Dashboa
 	return d, nil
 }
 
-// Analysis (§4.8, BR-15): COGS of the sold units taken LIFO from the latest purchases, over all periods.
+// Analysis (§4.8, BR-15): COGS of the sold units taken FIFO from the oldest purchases, over all periods (owner
+// decision 2026-10-04, replacing LIFO). Oldest = order date, else the period's start; ties by period, then STT.
 func (s *Service) Analysis(ctx context.Context, productID int64) (models.Analysis, error) {
 	a := models.Analysis{ProductID: productID, Lots: []models.AnalysisLot{}}
 	p, err := repo.GetProduct(ctx, s.Pool, productID)
@@ -77,6 +79,14 @@ func (s *Service) Analysis(ctx context.Context, productID int64) (models.Analysi
 	if err != nil {
 		return a, err
 	}
+	periods, err := repo.ListPeriods(ctx, s.Pool)
+	if err != nil {
+		return a, err
+	}
+	start := map[int64]string{}
+	for _, p := range periods {
+		start[p.ID] = p.Start
+	}
 	var purs []models.Purchase
 	for _, r := range all {
 		if r.ProductID == productID {
@@ -85,9 +95,27 @@ func (s *Service) Analysis(ctx context.Context, productID int64) (models.Analysi
 			a.InAmount += r.Total
 		}
 	}
+	age := func(r models.Purchase) string {
+		if r.Date != "" {
+			return r.Date
+		}
+		return start[r.PeriodID]
+	}
+	sort.SliceStable(purs, func(i, j int) bool {
+		x, y := purs[i], purs[j]
+		if ax, ay := age(x), age(y); ax != ay {
+			return ax < ay
+		}
+		if start[x.PeriodID] != start[y.PeriodID] {
+			return start[x.PeriodID] < start[y.PeriodID]
+		}
+		return x.STT < y.STT
+	})
 	need := a.SoldQty
-	for i := len(purs) - 1; i >= 0 && need > 0; i-- {
-		r := purs[i]
+	for _, r := range purs {
+		if need <= 0 {
+			break
+		}
 		take := min(need, r.Qty)
 		unit := r.Price - r.Discount
 		a.COGS += int64(take) * unit
