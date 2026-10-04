@@ -148,12 +148,12 @@ func UpsertRakumaOrder(ctx context.Context, db DB, r RakumaRow) (id int64, creat
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, COALESCE($14, TRUE))
 		ON CONFLICT (order_no) DO UPDATE SET
 			item_url    = EXCLUDED.item_url,
-			title       = EXCLUDED.title,
+			title       = CASE WHEN EXCLUDED.title = '' THEN rakuma_orders.title ELSE EXCLUDED.title END,
 			image_url   = CASE WHEN EXCLUDED.image_url = '' THEN rakuma_orders.image_url ELSE EXCLUDED.image_url END,
 			status      = EXCLUDED.status,
 			order_date  = COALESCE(EXCLUDED.order_date, rakuma_orders.order_date),
-			price       = EXCLUDED.price,
-			discount    = EXCLUDED.discount,
+			price       = CASE WHEN EXCLUDED.price = 0 THEN rakuma_orders.price ELSE EXCLUDED.price END,
+			discount    = CASE WHEN EXCLUDED.price = 0 THEN rakuma_orders.discount ELSE EXCLUDED.discount END,
 			carrier     = CASE WHEN EXCLUDED.carrier = '' THEN rakuma_orders.carrier ELSE EXCLUDED.carrier END,
 			tracking_no = COALESCE(EXCLUDED.tracking_no, rakuma_orders.tracking_no),
 			seller      = CASE WHEN EXCLUDED.seller = '' THEN rakuma_orders.seller ELSE EXCLUDED.seller END,
