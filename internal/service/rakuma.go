@@ -42,6 +42,9 @@ type RakumaSyncResult struct {
 	Updated     int `json:"updated"`
 	TrackingSet int `json:"trackingSet"` // purchases whose tracking number was filled from Rakuma
 	NewMessages int `json:"newMessages"`
+	// Warnings lists queued orders whose link or tracking number is already on a purchase row, and purchases whose
+	// newly copied tracking number repeats another row's (BR-05, BR-06).
+	Warnings []string `json:"warnings"`
 }
 
 func validRakumaOrder(in RakumaOrderInput) (repo.RakumaRow, map[string]string) {
@@ -57,15 +60,16 @@ func validRakumaOrder(in RakumaOrderInput) (repo.RakumaRow, map[string]string) {
 	if !reLink.MatchString(r.Link) {
 		e["link"] = "Link phải bắt đầu bằng http:// hoặc https://"
 	}
-	if r.Title == "" {
-		e["title"] = "Thiếu tên món."
-	}
 	if r.Image = strings.TrimSpace(in.Image); r.Image != "" && !reLink.MatchString(r.Image) {
 		e["image"] = "Link ảnh phải bắt đầu bằng http:// hoặc https://"
 	}
-	price, ok := in.Price.int()
-	if !ok || price <= 0 {
-		e["price"] = "Giá phải là số nguyên lớn hơn 0."
+	var price int64 // 0 = not read from Rakuma; the owner enters it when approving
+	if !in.Price.empty() {
+		v, ok := in.Price.int()
+		if !ok || v < 0 {
+			e["price"] = "Giá phải là số nguyên không âm."
+		}
+		price = v
 	}
 	r.Price = price
 	if !in.Discount.empty() {
@@ -101,7 +105,7 @@ func validRakumaOrder(in RakumaOrderInput) (repo.RakumaRow, map[string]string) {
 // SyncRakuma upserts a batch of scraped orders atomically. A new tracking number is copied onto the purchase the
 // order was approved into.
 func (s *Service) SyncRakuma(ctx context.Context, actor string, orders []RakumaOrderInput) (RakumaSyncResult, error) {
-	var res RakumaSyncResult
+	res := RakumaSyncResult{Warnings: []string{}}
 	rows := make([]repo.RakumaRow, len(orders))
 	fields := map[string]string{}
 	for i, in := range orders {
@@ -138,7 +142,17 @@ func (s *Service) SyncRakuma(ctx context.Context, actor string, orders []RakumaO
 			if err != nil {
 				return err
 			}
-			if o.PurchaseID == nil || o.Tracking == "" {
+			if o.PurchaseID == nil {
+				if !o.Dismissed {
+					w, err := queuedDuplicates(ctx, tx, o)
+					if err != nil {
+						return err
+					}
+					res.Warnings = append(res.Warnings, w...)
+				}
+				continue
+			}
+			if o.Tracking == "" {
 				continue
 			}
 			pid, _ := parseID(*o.PurchaseID)
@@ -160,10 +174,56 @@ func (s *Service) SyncRakuma(ctx context.Context, actor string, orders []RakumaO
 				return err
 			}
 			res.TrackingSet++
+			same, err := repo.PurchasesByTracking(ctx, tx, o.Tracking)
+			if err != nil {
+				return err
+			}
+			if same = without(same, pid); len(same) > 0 && !(after.Merged && allMerged(same)) {
+				res.Warnings = append(res.Warnings, fmt.Sprintf("Đơn %s: mã vận đơn %s vừa ghi vào dòng nhập số %d nhưng đã có ở dòng số %s.",
+					o.OrderNo, o.Tracking, after.STT, rowRefs(same)))
+			}
 		}
 		return repo.Audit(ctx, tx, "rakuma_sync", "batch", "sync", actor, nil, res)
 	})
 	return res, err
+}
+
+// queuedDuplicates warns when an order still waiting for approval is already on a purchase row, e.g. entered by hand.
+func queuedDuplicates(ctx context.Context, tx pgx.Tx, o models.RakumaOrder) ([]string, error) {
+	var w []string
+	same, err := repo.PurchasesByLink(ctx, tx, o.Link)
+	if err != nil {
+		return nil, err
+	}
+	if len(same) > 0 {
+		w = append(w, fmt.Sprintf("Đơn %s đang chờ duyệt: link đã có ở dòng nhập số %s.", o.OrderNo, rowRefs(same)))
+	}
+	if o.Tracking != "" {
+		if same, err = repo.PurchasesByTracking(ctx, tx, o.Tracking); err != nil {
+			return nil, err
+		}
+		if len(same) > 0 {
+			w = append(w, fmt.Sprintf("Đơn %s đang chờ duyệt: mã vận đơn %s đã có ở dòng nhập số %s.", o.OrderNo, o.Tracking, rowRefs(same)))
+		}
+	}
+	return w, nil
+}
+
+func allMerged(rows []models.Purchase) bool {
+	for _, r := range rows {
+		if !r.Merged {
+			return false
+		}
+	}
+	return true
+}
+
+func rowRefs(rows []models.Purchase) string {
+	refs := make([]string, len(rows))
+	for i, r := range rows {
+		refs[i] = fmt.Sprintf("%d (kỳ %s)", r.STT, r.PeriodLabel)
+	}
+	return strings.Join(refs, ", ")
 }
 
 // ApproveRakuma turns a queued order into a purchase. The link and tracking number always come from the order; the

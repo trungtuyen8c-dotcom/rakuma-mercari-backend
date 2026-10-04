@@ -58,7 +58,7 @@ func TestRakumaSyncUpsertsAndKeepsKnownFields(t *testing.T) {
 	}
 
 	// Invalid rows reject the whole batch
-	out := e.do("POST", "/api/v1/rakuma/sync", map[string]any{"orders": []any{rakumaOrder("B1", map[string]any{"price": 0})}}, write)
+	out := e.do("POST", "/api/v1/rakuma/sync", map[string]any{"orders": []any{rakumaOrder("B1", map[string]any{"price": -1})}}, write)
 	if out.Code != 422 {
 		t.Fatalf("invalid sync: %d %s", out.Code, out.Body)
 	}
@@ -91,6 +91,50 @@ func TestRakumaApproveCreatesPurchaseAndTracksLater(t *testing.T) {
 	got = e.ok("GET", "/api/v1/purchases", nil, 200)["_"].([]any)[0].(map[string]any)
 	if got["tracking"] != "TRK-2" {
 		t.Fatalf("closed purchase not updated: %v", got)
+	}
+}
+
+func TestRakumaUnknownPriceAndTitleStayBlank(t *testing.T) {
+	e := setup(t)
+	o := e.sync("", rakumaOrder("U1", map[string]any{"price": "", "discount": "", "title": ""}))["_"].([]any)[0].(map[string]any)
+	if num(o["price"]) != 0 || o["title"] != "" {
+		t.Fatalf("unknown fields: %v", o)
+	}
+	// A later sync that reads them fills them in; one that misses them again keeps what is stored
+	e.sync("", rakumaOrder("U1", nil))
+	o = e.sync("", rakumaOrder("U1", map[string]any{"price": "", "discount": "", "title": ""}))["_"].([]any)[0].(map[string]any)
+	if num(o["price"]) != 18000 || num(o["discount"]) != 900 || o["title"] != "MEGA 30th CELEBRATION" {
+		t.Fatalf("known fields lost: %v", o)
+	}
+}
+
+func TestRakumaSyncWarnsDuplicates(t *testing.T) {
+	e := setup(t)
+	pid := e.product("MEGA 30th")
+	e.ok("POST", "/api/v1/purchases", purchase(pid, 1000, 1, 0, map[string]any{"link": "https://item.fril.jp/D1", "tracking": "TRK-9"}), 201)
+	sync := func(o map[string]any) []any {
+		t.Helper()
+		return e.ok("POST", "/api/v1/rakuma/sync", map[string]any{"orders": []any{o}}, 200)["warnings"].([]any)
+	}
+
+	// A queued order already entered by hand: both its link and its tracking number are reported
+	if w := sync(rakumaOrder("D1", map[string]any{"tracking": "TRK-9"})); len(w) != 2 {
+		t.Fatalf("queued duplicates: %v", w)
+	}
+	if w := sync(rakumaOrder("D2", nil)); len(w) != 0 {
+		t.Fatalf("clean order warned: %v", w)
+	}
+
+	// An approved order whose later tracking number repeats another row's
+	var id string
+	for _, o := range e.ok("GET", "/api/v1/rakuma/orders", nil, 200)["_"].([]any) {
+		if o := o.(map[string]any); o["orderNo"] == "D2" {
+			id = o["id"].(string)
+		}
+	}
+	e.ok("POST", "/api/v1/rakuma/orders/"+id+"/approve", purchase(pid, 18000, 1, 0, nil), 201)
+	if w := sync(rakumaOrder("D2", map[string]any{"tracking": "TRK-9"})); len(w) != 1 {
+		t.Fatalf("tracking duplicate after approve: %v", w)
 	}
 }
 
