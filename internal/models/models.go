@@ -194,6 +194,8 @@ type RakumaOrder struct {
 	Messages    []RakumaMessage `json:"messages"`
 	Replies     []RakumaReply   `json:"replies"`
 	SyncedAt    string          `json:"syncedAt"`
+	// MissingSince: when an unfinished order stopped appearing on Rakuma ("" = listed); the owner should check it
+	MissingSince string `json:"missingSince"`
 }
 
 type RakumaReply struct {

@@ -138,6 +138,46 @@ func TestRakumaSyncWarnsDuplicates(t *testing.T) {
 	}
 }
 
+func TestRakumaFlagsOrdersMissingFromRakuma(t *testing.T) {
+	e := setup(t)
+	sync := func(listed []string, orders ...map[string]any) []any {
+		t.Helper()
+		if orders == nil {
+			orders = []map[string]any{}
+		}
+		return e.ok("POST", "/api/v1/rakuma/sync", map[string]any{"orders": orders, "listedLinks": listed}, 200)["warnings"].([]any)
+	}
+	byNo := func() map[string]map[string]any {
+		out := map[string]map[string]any{}
+		for _, o := range e.ok("GET", "/api/v1/rakuma/orders", nil, 200)["_"].([]any) {
+			out[o.(map[string]any)["orderNo"].(string)] = o.(map[string]any)
+		}
+		return out
+	}
+	link := func(no string) string { return "https://item.fril.jp/" + no }
+	sync(nil, rakumaOrder("M1", nil), rakumaOrder("M2", nil), rakumaOrder("M3", map[string]any{"status": "取引完了 (09/21)"}))
+
+	// M1 drops off the lists (e.g. payment expired); finished M3 falls off 購入済's first page and is not flagged
+	if w := sync([]string{link("M2")}); len(w) != 1 {
+		t.Fatalf("missing warnings: %v", w)
+	}
+	got := byNo()
+	if got["M1"]["missingSince"] == "" || got["M2"]["missingSince"] != "" || got["M3"]["missingSince"] != "" {
+		t.Fatalf("missing flags: %v", got)
+	}
+	// Still reported on the next sync, cleared once listed again
+	if w := sync([]string{link("M2")}); len(w) != 1 {
+		t.Fatalf("still missing: %v", w)
+	}
+	if w := sync([]string{link("M1"), link("M2")}); len(w) != 0 || byNo()["M1"]["missingSince"] != "" {
+		t.Fatalf("not cleared: %v", w)
+	}
+	// Syncs without listedLinks (older callers) change nothing
+	if w := sync(nil, rakumaOrder("M2", nil)); len(w) != 0 {
+		t.Fatalf("no listing: %v", w)
+	}
+}
+
 func TestRakumaDismissAndState(t *testing.T) {
 	e := setup(t)
 	id := e.sync("", rakumaOrder("A1", nil))["_"].([]any)[0].(map[string]any)["id"].(string)
