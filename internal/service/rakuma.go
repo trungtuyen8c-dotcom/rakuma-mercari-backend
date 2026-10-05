@@ -104,7 +104,9 @@ func validRakumaOrder(in RakumaOrderInput) (repo.RakumaRow, map[string]string) {
 
 // SyncRakuma upserts a batch of scraped orders atomically. A new tracking number is copied onto the purchase the
 // order was approved into.
-func (s *Service) SyncRakuma(ctx context.Context, actor string, orders []RakumaOrderInput) (RakumaSyncResult, error) {
+// listed (optional) holds every item link shown in 取引中 and the part of 購入済 that was read; unfinished orders
+// missing from it are flagged and reported.
+func (s *Service) SyncRakuma(ctx context.Context, actor string, orders []RakumaOrderInput, listed []string) (RakumaSyncResult, error) {
 	res := RakumaSyncResult{Warnings: []string{}}
 	rows := make([]repo.RakumaRow, len(orders))
 	fields := map[string]string{}
@@ -181,6 +183,16 @@ func (s *Service) SyncRakuma(ctx context.Context, actor string, orders []RakumaO
 			if same = without(same, pid); len(same) > 0 && !(after.Merged && allMerged(same)) {
 				res.Warnings = append(res.Warnings, fmt.Sprintf("Đơn %s: mã vận đơn %s vừa ghi vào dòng nhập số %d nhưng đã có ở dòng số %s.",
 					o.OrderNo, o.Tracking, after.STT, rowRefs(same)))
+			}
+		}
+		if listed != nil {
+			gone, err := repo.MarkRakumaMissing(ctx, tx, listed)
+			if err != nil {
+				return err
+			}
+			for _, o := range gone {
+				res.Warnings = append(res.Warnings, fmt.Sprintf("Đơn %s (%s, %s) không còn trên Rakuma từ %s: kiểm tra xem có bị huỷ hay hết hạn thanh toán.",
+					o.OrderNo, o.Seller, o.Title, o.MissingSince))
 			}
 		}
 		return repo.Audit(ctx, tx, "rakuma_sync", "batch", "sync", actor, nil, res)

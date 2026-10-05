@@ -315,11 +315,12 @@ func (h *Handlers) ListRakuma(c *gin.Context) {
 func (h *Handlers) SyncRakuma(c *gin.Context) {
 	var in struct {
 		Orders []service.RakumaOrderInput `json:"orders"`
+		Listed []string                   `json:"listedLinks"`
 	}
 	if !bind(c, &in) {
 		return
 	}
-	out, err := h.Svc.SyncRakuma(c.Request.Context(), actor(c), in.Orders)
+	out, err := h.Svc.SyncRakuma(c.Request.Context(), actor(c), in.Orders, in.Listed)
 	if err != nil {
 		fail(c, err)
 		return

@@ -14,13 +14,14 @@ SELECT o.id, o.order_no, o.item_url, o.title, o.image_url, o.status, COALESCE(to
        o.rating, o.issue_note, o.purchase_id::text, o.is_dismissed, o.is_chat_open,
        (SELECT COUNT(*) FROM rakuma_messages m WHERE m.order_id = o.id AND m.sender = 'seller'
           AND (o.messages_handled_at IS NULL OR m.created_at > o.messages_handled_at))::int,
-       to_char(o.synced_at AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI')
+       to_char(o.synced_at AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI'),
+       COALESCE(to_char(o.missing_since AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI'), '')
 FROM rakuma_orders o`
 
 func scanRakuma(row pgx.Row) (models.RakumaOrder, error) {
 	var o models.RakumaOrder
 	err := row.Scan(&o.ID, &o.OrderNo, &o.Link, &o.Title, &o.Image, &o.Status, &o.Date, &o.Price, &o.Discount, &o.Carrier,
-		&o.Tracking, &o.Seller, &o.Summary, &o.ReplyDraft, &o.Rating, &o.IssueNote, &o.PurchaseID, &o.Dismissed, &o.ChatOpen, &o.NewMessages, &o.SyncedAt)
+		&o.Tracking, &o.Seller, &o.Summary, &o.ReplyDraft, &o.Rating, &o.IssueNote, &o.PurchaseID, &o.Dismissed, &o.ChatOpen, &o.NewMessages, &o.SyncedAt, &o.MissingSince)
 	return o, err
 }
 
@@ -161,6 +162,7 @@ func UpsertRakumaOrder(ctx context.Context, db DB, r RakumaRow) (id int64, creat
 			reply_draft = CASE WHEN EXCLUDED.reply_draft = '' THEN rakuma_orders.reply_draft ELSE EXCLUDED.reply_draft END,
 			is_chat_open = COALESCE($14, rakuma_orders.is_chat_open),
 			synced_at   = now(),
+			missing_since = NULL,
 			updated_at  = now()
 		RETURNING id, xmax = 0`,
 		r.OrderNo, r.Link, r.Title, r.Status, r.Date, r.Price, r.Discount, r.Carrier, r.Tracking, r.Seller, r.Summary,
@@ -210,6 +212,22 @@ func InsertRakumaReply(ctx context.Context, db DB, orderID int64, kind, bodyVi s
 func SkipRakumaReply(ctx context.Context, db DB, id int64, reason string) error {
 	_, err := db.Exec(ctx, `UPDATE rakuma_replies SET status = 'SKIPPED', skip_reason = $2, sent_at = now() WHERE id = $1`, id, reason)
 	return err
+}
+
+// MarkRakumaMissing flags in-progress orders whose link is not among the links listed on Rakuma, clears the flag on
+// listed ones, and returns every flagged order. Finished (取引完了) and dismissed orders are never flagged.
+func MarkRakumaMissing(ctx context.Context, db DB, listed []string) ([]models.RakumaOrder, error) {
+	if _, err := db.Exec(ctx, `
+		UPDATE rakuma_orders SET missing_since = CASE WHEN item_url = ANY($1) THEN NULL ELSE COALESCE(missing_since, now()) END
+		WHERE item_url = ANY($1) AND missing_since IS NOT NULL
+		   OR NOT item_url = ANY($1) AND NOT is_dismissed AND status NOT LIKE '取引完了%'`, listed); err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(ctx, rakumaSelect+` WHERE o.missing_since IS NOT NULL ORDER BY o.id`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (models.RakumaOrder, error) { return scanRakuma(r) })
 }
 
 func SetRakumaChatOpen(ctx context.Context, db DB, id int64, open bool) error {
