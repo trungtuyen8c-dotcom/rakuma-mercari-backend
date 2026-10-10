@@ -62,6 +62,7 @@ func New(svc *service.Service) *gin.Engine {
 	write.PUT("/stock/:product_id/current", h.SetStock)
 	write.PUT("/periods/:id/totals", h.SetPeriodTotals)
 	write.POST("/rakuma/replies/:id/sent", h.MarkRakumaReplySent)
+	write.PUT("/rakuma/replies/:id/translation", h.SetRakumaReplyTranslation)
 	write.POST("/rakuma/replies/:id/skip", h.SkipRakumaReply)
 
 	owner := api.Group("", middlewares.RequireOwner())

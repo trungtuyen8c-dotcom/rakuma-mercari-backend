@@ -3,10 +3,11 @@
 package models
 
 type Product struct {
-	ID      int64  `json:"id,string"`
-	Name    string `json:"name"`
-	Active  bool   `json:"active"`
-	TxCount int    `json:"txCount"`
+	ID       int64  `json:"id,string"`
+	Name     string `json:"name"`
+	Active   bool   `json:"active"`
+	TxCount  int    `json:"txCount"`
+	Keywords string `json:"keywords"` // comma-separated words that identify it in a Rakuma item title
 }
 
 type Period struct {

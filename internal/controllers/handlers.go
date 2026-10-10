@@ -416,6 +416,25 @@ func (h *Handlers) AddRakumaReply(c *gin.Context) {
 	c.JSON(http.StatusCreated, out)
 }
 
+func (h *Handlers) SetRakumaReplyTranslation(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	var in struct {
+		BodyJa string `json:"bodyJa"`
+	}
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.SetRakumaReplyTranslation(c.Request.Context(), actor(c), id, in.BodyJa)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
 func (h *Handlers) MarkRakumaReplySent(c *gin.Context) {
 	id, ok := idParam(c, "id")
 	if !ok {

@@ -351,6 +351,22 @@ func (s *Service) MarkRakumaReplySent(ctx context.Context, actor string, replyID
 	return s.updateReply(ctx, actor, replyID, "reply_sent", func(tx pgx.Tx) error { return repo.MarkRakumaReplySent(ctx, tx, replyID, bodyJa) })
 }
 
+// MaxRakumaMessage is the length limit of Rakuma's transaction message box (maxlength="250", verified 2026-10-10).
+const MaxRakumaMessage = 250
+
+// SetRakumaReplyTranslation saves Claude's Japanese text for a pending reply, so the owner can send it from the
+// Chrome extension (which fills Rakuma's message box; the owner presses send).
+func (s *Service) SetRakumaReplyTranslation(ctx context.Context, actor string, replyID int64, bodyJa string) (models.RakumaOrder, error) {
+	bodyJa = strings.TrimSpace(bodyJa)
+	if bodyJa == "" {
+		return models.RakumaOrder{}, &ValidationError{Fields: map[string]string{"bodyJa": "Thiếu bản tiếng Nhật."}}
+	}
+	if n := len([]rune(bodyJa)); n > MaxRakumaMessage {
+		return models.RakumaOrder{}, &ValidationError{Fields: map[string]string{"bodyJa": fmt.Sprintf("Bản tiếng Nhật dài %d ký tự, khung chat Rakuma chỉ nhận tối đa %d.", n, MaxRakumaMessage)}}
+	}
+	return s.updateReply(ctx, actor, replyID, "reply_translation", func(tx pgx.Tx) error { return repo.SetRakumaReplyTranslation(ctx, tx, replyID, bodyJa) })
+}
+
 // DeleteRakumaReply cancels a reply that has not been sent yet.
 func (s *Service) DeleteRakumaReply(ctx context.Context, actor string, replyID int64) (models.RakumaOrder, error) {
 	return s.updateReply(ctx, actor, replyID, "reply_delete", func(tx pgx.Tx) error { return repo.DeleteRakumaReply(ctx, tx, replyID) })

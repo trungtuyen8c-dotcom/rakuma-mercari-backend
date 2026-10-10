@@ -53,8 +53,23 @@ func (s *Service) AddProduct(ctx context.Context, actor, name string) (models.Pr
 }
 
 type ProductPatch struct {
-	Name   *string `json:"name"`
-	Active *bool   `json:"active"`
+	Name     *string `json:"name"`
+	Active   *bool   `json:"active"`
+	Keywords *string `json:"keywords"`
+}
+
+// normalizeKeywords trims each comma-separated word and drops empty and repeated ones.
+func normalizeKeywords(s string) string {
+	seen := map[string]bool{}
+	var out []string
+	for _, w := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == '、' || r == '\n' }) {
+		w = strings.TrimSpace(w)
+		if k := strings.ToLower(w); w != "" && !seen[k] {
+			seen[k] = true
+			out = append(out, w)
+		}
+	}
+	return strings.Join(out, ", ")
 }
 
 func (s *Service) UpdateProduct(ctx context.Context, actor string, id int64, p ProductPatch) (models.Product, error) {
@@ -64,7 +79,7 @@ func (s *Service) UpdateProduct(ctx context.Context, actor string, id int64, p P
 		if err != nil {
 			return notFound(err)
 		}
-		name, active := before.Name, before.Active
+		name, active, keywords := before.Name, before.Active, before.Keywords
 		if p.Name != nil {
 			if m := s.nameErr(ctx, tx, *p.Name, id); m != "" {
 				return &ValidationError{Fields: map[string]string{"name": m}}
@@ -74,7 +89,13 @@ func (s *Service) UpdateProduct(ctx context.Context, actor string, id int64, p P
 		if p.Active != nil {
 			active = *p.Active
 		}
-		if err := repo.UpdateProduct(ctx, tx, id, name, active); err != nil {
+		if p.Keywords != nil {
+			keywords = normalizeKeywords(*p.Keywords)
+			if len([]rune(keywords)) > 500 {
+				return &ValidationError{Fields: map[string]string{"keywords": "Từ khóa tối đa 500 ký tự."}}
+			}
+		}
+		if err := repo.UpdateProduct(ctx, tx, id, name, active, keywords); err != nil {
 			return err
 		}
 		out, err = repo.GetProduct(ctx, tx, id)
