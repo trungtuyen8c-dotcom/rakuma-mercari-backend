@@ -120,8 +120,8 @@ func TestRakumaSyncWarnsDuplicates(t *testing.T) {
 		return e.ok("POST", "/api/v1/rakuma/sync", map[string]any{"orders": []any{o}}, 200)["warnings"].([]any)
 	}
 
-	// A queued order already entered by hand: both its link and its tracking number are reported
-	if w := sync(rakumaOrder("D1", map[string]any{"tracking": "TRK-9"})); len(w) != 2 {
+	// A queued order whose tracking number is on another row is reported
+	if w := sync(rakumaOrder("D3", map[string]any{"tracking": "TRK-9"})); len(w) != 1 {
 		t.Fatalf("queued duplicates: %v", w)
 	}
 	if w := sync(rakumaOrder("D2", nil)); len(w) != 0 {
@@ -138,6 +138,31 @@ func TestRakumaSyncWarnsDuplicates(t *testing.T) {
 	e.ok("POST", "/api/v1/rakuma/orders/"+id+"/approve", purchase(pid, 18000, 1, 0, nil), 201)
 	if w := sync(rakumaOrder("D2", map[string]any{"tracking": "TRK-9"})); len(w) != 1 {
 		t.Fatalf("tracking duplicate after approve: %v", w)
+	}
+}
+
+func TestRakumaSyncLinksPurchaseEnteredByHand(t *testing.T) {
+	e := setup(t)
+	pid := e.product("MEGA 30th")
+	p := e.ok("POST", "/api/v1/purchases", purchase(pid, 1000, 1, 0, map[string]any{"link": "https://item.fril.jp/H1"}), 201)
+
+	res := e.ok("POST", "/api/v1/rakuma/sync", map[string]any{"orders": []any{rakumaOrder("H1", map[string]any{"tracking": "TRK-H"})}}, 200)
+	if num(res["linked"]) != 1 || len(res["warnings"].([]any)) != 0 {
+		t.Fatalf("hand-entered order not linked: %v", res)
+	}
+	o := e.ok("GET", "/api/v1/rakuma/orders", nil, 200)["_"].([]any)[0].(map[string]any)
+	if o["purchaseId"] != p["id"] {
+		t.Fatalf("order not attached to purchase %v: %v", p["id"], o)
+	}
+	got := e.ok("GET", "/api/v1/purchases", nil, 200)["_"].([]any)[0].(map[string]any)
+	if got["tracking"] != "TRK-H" {
+		t.Fatalf("tracking not copied onto the linked row: %v", got)
+	}
+	// Re-sync is a no-op; a second order with the same link stays queued with a warning
+	res = e.ok("POST", "/api/v1/rakuma/sync", map[string]any{"orders": []any{rakumaOrder("H1", nil),
+		rakumaOrder("H2", map[string]any{"link": "https://item.fril.jp/H1"})}}, 200)
+	if num(res["linked"]) != 0 || len(res["warnings"].([]any)) != 1 {
+		t.Fatalf("re-sync: %v", res)
 	}
 }
 

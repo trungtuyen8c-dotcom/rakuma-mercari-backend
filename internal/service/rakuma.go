@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,7 @@ type RakumaSyncResult struct {
 	Created     int `json:"created"`
 	Updated     int `json:"updated"`
 	TrackingSet int `json:"trackingSet"` // purchases whose tracking number was filled from Rakuma
+	Linked      int `json:"linked"`      // queued orders attached to a purchase row already entered with the same link
 	NewMessages int `json:"newMessages"`
 	// Warnings lists queued orders whose link or tracking number is already on a purchase row, and purchases whose
 	// newly copied tracking number repeats another row's (BR-05, BR-06).
@@ -144,6 +146,15 @@ func (s *Service) SyncRakuma(ctx context.Context, actor string, orders []RakumaO
 			if err != nil {
 				return err
 			}
+			if o.PurchaseID == nil && !o.Dismissed {
+				linked, err := linkEnteredPurchase(ctx, tx, actor, &o)
+				if err != nil {
+					return err
+				}
+				if linked {
+					res.Linked++
+				}
+			}
 			if o.PurchaseID == nil {
 				if !o.Dismissed {
 					w, err := queuedDuplicates(ctx, tx, o)
@@ -198,6 +209,30 @@ func (s *Service) SyncRakuma(ctx context.Context, actor string, orders []RakumaO
 		return repo.Audit(ctx, tx, "rakuma_sync", "batch", "sync", actor, nil, res)
 	})
 	return res, err
+}
+
+// linkEnteredPurchase attaches a queued order to the purchase row the owner already entered with the same item link,
+// so it leaves the approval queue and later tracking numbers flow onto that row. It links only when exactly one row
+// has the link and no other Rakuma order points at it.
+func linkEnteredPurchase(ctx context.Context, tx pgx.Tx, actor string, o *models.RakumaOrder) (bool, error) {
+	same, err := repo.PurchasesByLink(ctx, tx, o.Link)
+	if err != nil || len(same) != 1 {
+		return false, err
+	}
+	pid := same[0].ID
+	taken, err := repo.RakumaOrderLinkedTo(ctx, tx, pid)
+	if err != nil || taken {
+		return false, err
+	}
+	if err := repo.SetRakumaPurchase(ctx, tx, o.ID, pid); err != nil {
+		return false, err
+	}
+	if err := repo.Audit(ctx, tx, "rakuma_order", o.ID, "link", actor, nil, map[string]any{"purchaseId": pid}); err != nil {
+		return false, err
+	}
+	sid := strconv.FormatInt(pid, 10)
+	o.PurchaseID = &sid
+	return true, nil
 }
 
 // queuedDuplicates warns when an order still waiting for approval is already on a purchase row, e.g. entered by hand.
