@@ -43,6 +43,7 @@ type RakumaSyncResult struct {
 	Updated     int `json:"updated"`
 	TrackingSet int `json:"trackingSet"` // purchases whose tracking number was filled from Rakuma
 	Linked      int `json:"linked"`      // queued orders attached to a purchase row already entered with the same link
+	Purchased   int `json:"purchased"`   // purchase rows the sync wrote for paid orders whose link was not on any row
 	NewMessages int `json:"newMessages"`
 	// Warnings lists queued orders whose link or tracking number is already on a purchase row, and purchases whose
 	// newly copied tracking number repeats another row's (BR-05, BR-06).
@@ -123,6 +124,7 @@ func (s *Service) SyncRakuma(ctx context.Context, actor string, orders []RakumaO
 		return res, &ValidationError{Fields: fields}
 	}
 	err := s.tx(ctx, func(tx pgx.Tx) error {
+		var products []models.Product
 		for i, r := range rows {
 			id, created, err := repo.UpsertRakumaOrder(ctx, tx, r)
 			if err != nil {
@@ -153,6 +155,20 @@ func (s *Service) SyncRakuma(ctx context.Context, actor string, orders []RakumaO
 				}
 				if linked {
 					res.Linked++
+				} else {
+					if products == nil {
+						if products, err = repo.ListProducts(ctx, tx); err != nil {
+							return err
+						}
+					}
+					made, w, err := s.purchaseFromRakuma(ctx, tx, actor, &o, products)
+					if err != nil {
+						return err
+					}
+					if made {
+						res.Purchased++
+					}
+					res.Warnings = append(res.Warnings, w...)
 				}
 			}
 			if o.PurchaseID == nil {
@@ -233,6 +249,58 @@ func linkEnteredPurchase(ctx context.Context, tx pgx.Tx, actor string, o *models
 	sid := strconv.FormatInt(pid, 10)
 	o.PurchaseID = &sid
 	return true, nil
+}
+
+// purchaseFromRakuma writes the purchase row for a paid order whose link is on no row yet, so the owner only
+// corrects it afterwards. The product comes from the owner's names and keywords and stays empty when unclear; a
+// "4BOX" lump price is split only when it divides evenly, otherwise the row is one item at the lump price.
+// Unpaid orders, and orders without a price or date, stay queued.
+func (s *Service) purchaseFromRakuma(ctx context.Context, tx pgx.Tx, actor string, o *models.RakumaOrder, products []models.Product) (bool, []string, error) {
+	if strings.HasPrefix(o.Status, "支払い") || o.Price <= 0 || o.Date == "" {
+		return false, nil, nil
+	}
+	if same, err := repo.PurchasesByLink(ctx, tx, o.Link); err != nil || len(same) > 0 {
+		return false, nil, err
+	}
+	qty, price, disc := int64(1), o.Price, o.Discount
+	if q := int64(guessQty(o.Title)); q > 1 && price%q == 0 && disc%q == 0 {
+		qty, price, disc = q, price/q, disc/q
+	}
+	in := PurchaseInput{
+		Date: o.Date, Link: o.Link, Tracking: o.Tracking, noProduct: true,
+		Price: Flex(strconv.FormatInt(price, 10)), Qty: Flex(strconv.FormatInt(qty, 10)), Discount: Flex(strconv.FormatInt(disc, 10)),
+	}
+	if p, ok := guessProduct(o.Title, products); ok {
+		in.ProductID = strconv.FormatInt(p.ID, 10)
+	}
+	p, err := s.addPurchase(ctx, tx, actor, in, true)
+	var ve *ValidationError
+	if errors.As(err, &ve) {
+		msgs := make([]string, 0, len(ve.Fields))
+		for _, m := range ve.Fields {
+			msgs = append(msgs, m)
+		}
+		return false, []string{fmt.Sprintf("Đơn %s chưa tự nhập được, duyệt tay ở tab Rakuma: %s", o.OrderNo, strings.Join(msgs, " "))}, nil
+	}
+	if err != nil {
+		return false, nil, err
+	}
+	if err := repo.SetRakumaPurchase(ctx, tx, o.ID, p.ID); err != nil {
+		return false, nil, err
+	}
+	sid := strconv.FormatInt(p.ID, 10)
+	o.PurchaseID = &sid
+	var w []string
+	if o.Tracking != "" {
+		same, err := repo.PurchasesByTracking(ctx, tx, o.Tracking)
+		if err != nil {
+			return false, nil, err
+		}
+		if same = without(same, p.ID); len(same) > 0 {
+			w = append(w, fmt.Sprintf("Đơn %s: mã vận đơn %s vừa ghi vào dòng nhập số %d nhưng đã có ở dòng số %s.", o.OrderNo, o.Tracking, p.STT, rowRefs(same)))
+		}
+	}
+	return true, w, nil
 }
 
 // queuedDuplicates warns when an order still waiting for approval is already on a purchase row, e.g. entered by hand.
