@@ -1,6 +1,9 @@
 package routers_test
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func rakumaOrder(no string, extra map[string]any) map[string]any {
 	m := map[string]any{
@@ -295,5 +298,37 @@ func TestRakumaBroadcastSkipsClosedChats(t *testing.T) {
 	}
 	if res := e.do("POST", "/api/v1/rakuma/replies/"+rid+"/sent", map[string]any{"bodyJa": "x"}, write); res.Code != 409 {
 		t.Fatalf("send after skip: %d", res.Code)
+	}
+}
+
+// Owner request 2026-10-10: Claude stores the Japanese text first; the owner sends it from the Chrome extension.
+func TestRakumaReplyTranslation(t *testing.T) {
+	e := setup(t)
+	write := e.ok("POST", "/api/v1/api-keys", map[string]string{"name": "claude", "scope": "write"}, 201)["key"].(string)
+	read := e.ok("POST", "/api/v1/api-keys", map[string]string{"name": "r", "scope": "read"}, 201)["key"].(string)
+	id := e.sync(write, rakumaOrder("A1", nil))["_"].([]any)[0].(map[string]any)["id"].(string)
+	rid := e.ok("POST", "/api/v1/rakuma/orders/"+id+"/replies", map[string]any{"body": "Cảm ơn shop"}, 201)["replies"].([]any)[0].(map[string]any)["id"].(string)
+	path := "/api/v1/rakuma/replies/" + rid + "/translation"
+
+	if res := e.do("PUT", path, map[string]any{"bodyJa": "ありがとうございます。"}, read); res.Code != 403 {
+		t.Fatalf("read key: %d", res.Code)
+	}
+	if res := e.do("PUT", path, map[string]any{"bodyJa": "  "}, write); res.Code != 422 {
+		t.Fatalf("empty: %d", res.Code)
+	}
+	if res := e.do("PUT", path, map[string]any{"bodyJa": strings.Repeat("あ", 251)}, write); res.Code != 422 {
+		t.Fatalf("over 250: %d", res.Code)
+	}
+	if res := e.do("PUT", path, map[string]any{"bodyJa": " ありがとうございます。 "}, write); res.Code != 200 {
+		t.Fatalf("save: %d %s", res.Code, res.Body)
+	}
+	got := e.ok("GET", "/api/v1/rakuma/orders", nil, 200)["_"].([]any)[0].(map[string]any)["replies"].([]any)[0].(map[string]any)
+	if got["status"] != "PENDING" || got["bodyJa"] != "ありがとうございます。" {
+		t.Fatalf("translated reply should stay pending with its Japanese text: %v", got)
+	}
+	// Once sent it is final
+	e.ok("POST", "/api/v1/rakuma/replies/"+rid+"/sent", map[string]any{"bodyJa": "ありがとうございます。"}, 200)
+	if res := e.do("PUT", path, map[string]any{"bodyJa": "変更"}, write); res.Code != 409 {
+		t.Fatalf("after sent: %d", res.Code)
 	}
 }

@@ -246,6 +246,12 @@ func MarkRakumaReplySent(ctx context.Context, db DB, id int64, bodyJa string) er
 	return err
 }
 
+// SetRakumaReplyTranslation stores the Japanese text of a reply that is still waiting to be sent.
+func SetRakumaReplyTranslation(ctx context.Context, db DB, id int64, bodyJa string) error {
+	_, err := db.Exec(ctx, `UPDATE rakuma_replies SET body_ja = $2 WHERE id = $1`, id, bodyJa)
+	return err
+}
+
 func DeleteRakumaReply(ctx context.Context, db DB, id int64) error {
 	_, err := db.Exec(ctx, `DELETE FROM rakuma_replies WHERE id = $1`, id)
 	return err
