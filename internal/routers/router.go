@@ -58,6 +58,7 @@ func New(svc *service.Service) *gin.Engine {
 	write.POST("/periods/open-next", h.OpenNextPeriod)
 	write.PATCH("/purchases/:id", h.UpdatePurchase)
 	write.PUT("/purchases/:id", h.EditPurchase)
+	write.POST("/purchases/:id/split", h.SplitPurchase)
 	write.PUT("/sales/:id", h.EditSale)
 	write.PUT("/stock/:product_id/current", h.SetStock)
 	write.PUT("/periods/:id/totals", h.SetPeriodTotals)

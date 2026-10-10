@@ -415,3 +415,46 @@ func TestRakumaReplyTranslation(t *testing.T) {
 		t.Fatalf("after sent: %d", res.Code)
 	}
 }
+
+func TestSplitCombinedPurchase(t *testing.T) {
+	e := setup(t)
+	storm, abyss, ninja := e.product("Storm"), e.product("Abyss"), e.product("Ninja")
+	// A synced combined order: one row, lump price, tracking not known yet
+	e.sync("", rakumaOrder("G1", map[string]any{"title": "まとめ 各2BOX", "price": 62000, "discount": 1860}))
+	row := e.ok("GET", "/api/v1/purchases", nil, 200)["_"].([]any)[0].(map[string]any)
+	id := row["id"].(string)
+	if num(row["total"]) != 60140 {
+		t.Fatalf("synced row: %v", row)
+	}
+	line := func(pid string, qty, price int) map[string]any {
+		return map[string]any{"productId": pid, "qty": qty, "price": price}
+	}
+
+	// Lines must add up to the row total
+	out := e.do("POST", "/api/v1/purchases/"+id+"/split", map[string]any{"lines": []any{line(storm, 2, 12000), line(abyss, 2, 7000)}}, "")
+	if out.Code != 422 || !strings.Contains(out.Body.String(), "lệch 22.140¥") {
+		t.Fatalf("sum check: %d %s", out.Code, out.Body)
+	}
+	rows := e.ok("POST", "/api/v1/purchases/"+id+"/split", map[string]any{"lines": []any{
+		line(storm, 2, 12000), line(abyss, 2, 7000), line(ninja, 2, 11070)}}, 200)["_"].([]any)
+	if len(rows) != 3 {
+		t.Fatalf("split rows: %v", rows)
+	}
+	first, second := rows[0].(map[string]any), rows[1].(map[string]any)
+	if first["id"] != id || first["link"] != "https://item.fril.jp/G1" || second["link"] != "" || !first["merged"].(bool) ||
+		!second["merged"].(bool) || second["date"] != first["date"] || first["dupLink"].(bool) {
+		t.Fatalf("split shape: %v / %v", first, second)
+	}
+	if n := num(e.stock(abyss)["incoming"]); n != 2 {
+		t.Fatalf("abyss stock: %v", n)
+	}
+
+	// The tracking number that arrives later goes onto every row of the order, without duplicate flags
+	e.sync("", rakumaOrder("G1", map[string]any{"title": "まとめ 各2BOX", "price": 62000, "discount": 1860, "tracking": "TRK-G"}))
+	for _, p := range e.ok("GET", "/api/v1/purchases", nil, 200)["_"].([]any) {
+		p := p.(map[string]any)
+		if p["tracking"] != "TRK-G" || p["dupTracking"].(bool) {
+			t.Fatalf("tracking after split: %v", p)
+		}
+	}
+}

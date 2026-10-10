@@ -535,6 +535,25 @@ func (h *Handlers) EditPurchase(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
+func (h *Handlers) SplitPurchase(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	var in struct {
+		Lines []service.SplitLine `json:"lines"`
+	}
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.SplitPurchase(c.Request.Context(), actor(c), id, in.Lines)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
 func (h *Handlers) EditSale(c *gin.Context) {
 	id, ok := idParam(c, "id")
 	if !ok {

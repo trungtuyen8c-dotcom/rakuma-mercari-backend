@@ -199,8 +199,12 @@ func SetRakumaHandled(ctx context.Context, db DB, id int64) error {
 	return err
 }
 
+// SetPurchaseTracking sets the tracking number on a row and on the rows split from the same combined order (they share
+// its merge group). The group itself is kept so the rows stay one shipment.
 func SetPurchaseTracking(ctx context.Context, db DB, id int64, tracking string) error {
-	_, err := db.Exec(ctx, `UPDATE purchases SET tracking_no = $2, updated_at = now() WHERE id = $1`, id, tracking)
+	_, err := db.Exec(ctx, `
+		UPDATE purchases SET tracking_no = $2, updated_at = now()
+		WHERE id = $1 OR merge_group = (SELECT merge_group FROM purchases WHERE id = $1 AND merge_group LIKE 'split:%')`, id, tracking)
 	return err
 }
 
