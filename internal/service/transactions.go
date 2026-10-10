@@ -30,6 +30,9 @@ type PurchaseInput struct {
 	Merged    bool   `json:"merged"`
 	Link      string `json:"link"`
 	Note      string `json:"note"`
+
+	// noProduct lets a row be saved without a product: rows written by the Rakuma sync, and edits of such rows.
+	noProduct bool
 }
 
 // OpenedStockNote marks a 0¥ sale that only takes opened items out of stock.
@@ -180,8 +183,12 @@ func (s *Service) savePurchase(ctx context.Context, tx pgx.Tx, actor string, in 
 		if e == nil {
 			e = map[string]string{}
 		}
-		prod, ok := s.productFor(ctx, tx, in.ProductID, before.ProductID)
-		if !ok {
+		var prod models.Product
+		if blank := strings.TrimSpace(in.ProductID); (blank == "" || blank == "0") && (in.noProduct || editID > 0 && before.ProductID == 0) {
+			// stays without a product until the owner picks one
+		} else if p, ok := s.productFor(ctx, tx, in.ProductID, before.ProductID); ok {
+			prod = p
+		} else {
 			e["productId"] = "Chọn sản phẩm có trong danh mục."
 		}
 		price, pOK := in.Price.int()

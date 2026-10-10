@@ -13,7 +13,7 @@ const purchaseSelect = `
 SELECT * FROM (
   SELECT x.id, x.period_id, pe.label, row_number() OVER (PARTITION BY x.period_id ORDER BY x.id)::int,
          x.source, COALESCE(to_char(x.order_date, 'YYYY-MM-DD'), ''), COALESCE(x.item_url, ''),
-         x.product_id, pr.name, x.unit_price, x.quantity, x.unit_discount, x.total,
+         COALESCE(x.product_id, 0), COALESCE(pr.name, ''), x.unit_price, x.quantity, x.unit_discount, x.total,
          COALESCE(x.tracking_no, ''), x.merge_group IS NOT NULL, x.is_checked, x.is_reviewed, x.note,
          x.item_url IS NOT NULL AND COUNT(*) OVER (PARTITION BY x.item_url) > 1,
          x.tracking_no IS NOT NULL AND COUNT(*) OVER (PARTITION BY x.tracking_no) > 1
@@ -21,7 +21,7 @@ SELECT * FROM (
          pe.status = 'CLOSED'
   FROM purchases x
   JOIN periods pe ON pe.id = x.period_id
-  JOIN products pr ON pr.id = x.product_id
+  LEFT JOIN products pr ON pr.id = x.product_id
 ) q`
 
 func scanPurchase(row pgx.Row) (models.Purchase, error) {
@@ -82,14 +82,14 @@ func InsertPurchase(ctx context.Context, db DB, r PurchaseRow) (int64, error) {
 	err := db.QueryRow(ctx, `
 		INSERT INTO purchases (period_id, source, order_date, item_url, product_id, unit_price, quantity, unit_discount,
 		                       tracking_no, merge_group, is_checked, is_reviewed, note)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id`,
+		VALUES ($1, $2, $3, $4, NULLIF($5, 0), $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id`,
 		r.PeriodID, r.Source, r.Date, r.Link, r.ProductID, r.Price, r.Qty, r.Discount, r.Tracking, r.MergeGroup, r.Checked, r.Reviewed, r.Note).Scan(&id)
 	return id, err
 }
 
 func UpdatePurchase(ctx context.Context, db DB, id int64, r PurchaseRow) error {
 	_, err := db.Exec(ctx, `
-		UPDATE purchases SET period_id = $2, source = $3, order_date = $4, item_url = $5, product_id = $6, unit_price = $7,
+		UPDATE purchases SET period_id = $2, source = $3, order_date = $4, item_url = $5, product_id = NULLIF($6, 0), unit_price = $7,
 		       quantity = $8, unit_discount = $9, tracking_no = $10, merge_group = $11, is_checked = $12, is_reviewed = $13,
 		       note = $14, updated_at = now()
 		WHERE id = $1`,

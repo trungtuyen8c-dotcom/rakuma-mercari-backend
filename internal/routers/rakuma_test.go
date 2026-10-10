@@ -16,6 +16,9 @@ func rakumaOrder(no string, extra map[string]any) map[string]any {
 	return m
 }
 
+// unpaid orders stay in the approval queue; paid ones become purchase rows on sync
+var unpaid = map[string]any{"status": "支払い (期限 10/12 23:59)"}
+
 func (e *env) sync(key string, orders ...map[string]any) map[string]any {
 	e.t.Helper()
 	res := e.do("POST", "/api/v1/rakuma/sync", map[string]any{"orders": orders}, key)
@@ -70,7 +73,7 @@ func TestRakumaSyncUpsertsAndKeepsKnownFields(t *testing.T) {
 func TestRakumaApproveCreatesPurchaseAndTracksLater(t *testing.T) {
 	e := setup(t)
 	pid := e.product("MEGA 30th")
-	o := e.sync("", rakumaOrder("A1", nil))["_"].([]any)[0].(map[string]any)
+	o := e.sync("", rakumaOrder("A1", unpaid))["_"].([]any)[0].(map[string]any)
 	id := o["id"].(string)
 
 	// The owner splits a lump order: qty and per-unit figures come from the form; link comes from the order
@@ -124,7 +127,7 @@ func TestRakumaSyncWarnsDuplicates(t *testing.T) {
 	if w := sync(rakumaOrder("D3", map[string]any{"tracking": "TRK-9"})); len(w) != 1 {
 		t.Fatalf("queued duplicates: %v", w)
 	}
-	if w := sync(rakumaOrder("D2", nil)); len(w) != 0 {
+	if w := sync(rakumaOrder("D2", unpaid)); len(w) != 0 {
 		t.Fatalf("clean order warned: %v", w)
 	}
 
@@ -162,6 +165,61 @@ func TestRakumaSyncLinksPurchaseEnteredByHand(t *testing.T) {
 	res = e.ok("POST", "/api/v1/rakuma/sync", map[string]any{"orders": []any{rakumaOrder("H1", nil),
 		rakumaOrder("H2", map[string]any{"link": "https://item.fril.jp/H1"})}}, 200)
 	if num(res["linked"]) != 0 || len(res["warnings"].([]any)) != 1 {
+		t.Fatalf("re-sync: %v", res)
+	}
+}
+
+func TestRakumaSyncWritesPaidOrdersToPurchases(t *testing.T) {
+	e := setup(t)
+	mega := e.product("MEGA 30th")
+	e.ok("PATCH", "/api/v1/products/"+mega, map[string]any{"keywords": "30th celebration"}, 200)
+	e.product("Storm Emerald")
+	purchases := func() map[string]map[string]any {
+		out := map[string]map[string]any{}
+		for _, p := range e.ok("GET", "/api/v1/purchases", nil, 200)["_"].([]any) {
+			p := p.(map[string]any)
+			out[p["link"].(string)] = p
+		}
+		return out
+	}
+
+	res := e.ok("POST", "/api/v1/rakuma/sync", map[string]any{"orders": []any{
+		// known product, lump "4BOX" price that divides evenly
+		rakumaOrder("P1", map[string]any{"title": "ポケモン 30th CELEBRATION 4BOX", "price": 100000, "discount": 3000, "tracking": "TRK-P1"}),
+		// unknown product, lump price that does not divide: one row at the lump price, product left empty
+		rakumaOrder("P2", map[string]any{"title": "まとめ売り 3BOX", "price": 70000, "discount": 0}),
+		// unpaid: stays queued
+		rakumaOrder("P3", unpaid),
+	}}, 200)
+	if num(res["purchased"]) != 2 {
+		t.Fatalf("purchased: %v", res)
+	}
+	got := purchases()
+	p1, p2 := got["https://item.fril.jp/P1"], got["https://item.fril.jp/P2"]
+	if p1["productId"] != mega || num(p1["qty"]) != 4 || num(p1["price"]) != 25000 || num(p1["discount"]) != 750 ||
+		num(p1["total"]) != 97000 || p1["tracking"] != "TRK-P1" || p1["date"] != "2026-09-20" {
+		t.Fatalf("P1 row: %v", p1)
+	}
+	if p2["productId"] != "0" || p2["productName"] != "" || num(p2["qty"]) != 1 || num(p2["price"]) != 70000 {
+		t.Fatalf("P2 row: %v", p2)
+	}
+	if _, ok := got["https://item.fril.jp/P3"]; ok {
+		t.Fatal("unpaid order written")
+	}
+
+	// A row without a product can be edited (price first, product later), and a new manual row still needs one
+	e.ok("PUT", "/api/v1/purchases/"+p2["id"].(string), purchase("", 23000, 3, 0, map[string]any{"date": "2026-09-20",
+		"link": "https://item.fril.jp/P2"}), 200)
+	e.ok("PUT", "/api/v1/purchases/"+p2["id"].(string), purchase(mega, 23000, 3, 0, map[string]any{"date": "2026-09-20",
+		"link": "https://item.fril.jp/P2"}), 200)
+	if p := purchases()["https://item.fril.jp/P2"]; p["productId"] != mega || num(p["total"]) != 69000 {
+		t.Fatalf("edited P2: %v", p)
+	}
+	e.ok("POST", "/api/v1/purchases", purchase("", 1000, 1, 0, nil), 422)
+
+	// Re-sync writes nothing twice; once paid, the queued order becomes a row too
+	res = e.ok("POST", "/api/v1/rakuma/sync", map[string]any{"orders": []any{rakumaOrder("P1", nil), rakumaOrder("P3", nil)}}, 200)
+	if num(res["purchased"]) != 1 || len(purchases()) != 3 {
 		t.Fatalf("re-sync: %v", res)
 	}
 }
@@ -222,7 +280,7 @@ func TestRakumaDismissAndState(t *testing.T) {
 func TestRakumaRatingAndIssueNote(t *testing.T) {
 	e := setup(t)
 	pid := e.product("MEGA 30th")
-	id := e.sync("", rakumaOrder("A1", map[string]any{"image": "https://img.fril.jp/a.jpg"}))["_"].([]any)[0].(map[string]any)["id"].(string)
+	id := e.sync("", rakumaOrder("A1", map[string]any{"image": "https://img.fril.jp/a.jpg", "status": unpaid["status"]}))["_"].([]any)[0].(map[string]any)["id"].(string)
 	e.ok("POST", "/api/v1/rakuma/orders/"+id+"/approve", purchase(pid, 18000, 1, 900, nil), 201)
 
 	out := e.ok("PATCH", "/api/v1/rakuma/orders/"+id, map[string]any{"issueNote": "  Hộp bị móp, đã nhắn shop  "}, 200)
