@@ -444,3 +444,23 @@ func TestStateForUI(t *testing.T) {
 		t.Fatalf("settings=%v", st["settings"])
 	}
 }
+
+// Owner request 2026-10-10: Rakuma keywords per product, used to pick the product when approving a synced order.
+func TestProductRakumaKeywords(t *testing.T) {
+	e := setup(t)
+	pid := e.product("30th Celebration")
+	out := e.ok("PATCH", "/api/v1/products/"+pid, map[string]any{"keywords": " 30th ,セレブレーション、30TH,, "}, 200)
+	if out["keywords"] != "30th, セレブレーション" || out["name"] != "30th Celebration" {
+		t.Fatalf("keywords not normalized or name changed: %v", out)
+	}
+	// A name-only patch keeps the keywords
+	out = e.ok("PATCH", "/api/v1/products/"+pid, map[string]any{"name": "30th"}, 200)
+	if out["keywords"] != "30th, セレブレーション" {
+		t.Fatalf("keywords lost on rename: %v", out)
+	}
+	e.ok("PATCH", "/api/v1/products/"+pid, map[string]any{"keywords": strings.Repeat("a", 501)}, 422)
+	// Only the owner can change them
+	if res := e.do("PATCH", "/api/v1/products/"+pid, map[string]any{"keywords": "x"}, "none"); res.Code != 401 {
+		t.Fatalf("anonymous patch: %d", res.Code)
+	}
+}

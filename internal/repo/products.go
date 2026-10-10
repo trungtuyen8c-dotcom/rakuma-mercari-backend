@@ -9,13 +9,13 @@ import (
 )
 
 const productSelect = `
-SELECT p.id, p.name, p.is_active,
+SELECT p.id, p.name, p.is_active, p.rakuma_keywords,
        (SELECT COUNT(*) FROM purchases x WHERE x.product_id = p.id) + (SELECT COUNT(*) FROM sales y WHERE y.product_id = p.id)
 FROM products p`
 
 func scanProduct(row pgx.Row) (models.Product, error) {
 	var p models.Product
-	err := row.Scan(&p.ID, &p.Name, &p.Active, &p.TxCount)
+	err := row.Scan(&p.ID, &p.Name, &p.Active, &p.Keywords, &p.TxCount)
 	return p, err
 }
 
@@ -44,8 +44,8 @@ func InsertProduct(ctx context.Context, db DB, name string) (int64, error) {
 	return id, err
 }
 
-func UpdateProduct(ctx context.Context, db DB, id int64, name string, active bool) error {
-	_, err := db.Exec(ctx, `UPDATE products SET name = btrim($2), is_active = $3 WHERE id = $1`, id, name, active)
+func UpdateProduct(ctx context.Context, db DB, id int64, name string, active bool, keywords string) error {
+	_, err := db.Exec(ctx, `UPDATE products SET name = btrim($2), is_active = $3, rakuma_keywords = $4 WHERE id = $1`, id, name, active, keywords)
 	return err
 }
 
