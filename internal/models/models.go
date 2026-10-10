@@ -3,7 +3,7 @@
 package models
 
 type Product struct {
-	ID      int64  `json:"id,string"`
+	ID       int64  `json:"id,string"`
 	Name     string `json:"name"`
 	Active   bool   `json:"active"`
 	TxCount  int    `json:"txCount"`
