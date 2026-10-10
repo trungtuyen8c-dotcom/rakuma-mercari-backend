@@ -267,6 +267,15 @@ func (s *Service) savePurchase(ctx context.Context, tx pgx.Tx, actor string, in 
 		}
 		if in.Merged { // BR-06: rows of one shipment share a merge_group
 			g := tracking
+			if editID > 0 && tracking == before.Tracking { // keep the group of a split combined order
+				prev, err := repo.PurchaseMergeGroup(ctx, tx, editID)
+				if err != nil {
+					return err
+				}
+				if prev != "" {
+					g = prev
+				}
+			}
 			row.MergeGroup = &g
 		}
 		if editID > 0 {

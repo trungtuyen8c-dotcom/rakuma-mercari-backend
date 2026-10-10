@@ -87,6 +87,15 @@ func InsertPurchase(ctx context.Context, db DB, r PurchaseRow) (int64, error) {
 	return id, err
 }
 
+func PurchaseMergeGroup(ctx context.Context, db DB, id int64) (string, error) {
+	var g *string
+	err := db.QueryRow(ctx, `SELECT merge_group FROM purchases WHERE id = $1`, id).Scan(&g)
+	if g == nil {
+		return "", err
+	}
+	return *g, err
+}
+
 func UpdatePurchase(ctx context.Context, db DB, id int64, r PurchaseRow) error {
 	_, err := db.Exec(ctx, `
 		UPDATE purchases SET period_id = $2, source = $3, order_date = $4, item_url = $5, product_id = NULLIF($6, 0), unit_price = $7,
