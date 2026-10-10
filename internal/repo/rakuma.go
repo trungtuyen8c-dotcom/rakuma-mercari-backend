@@ -183,6 +183,12 @@ func SetRakumaPurchase(ctx context.Context, db DB, id, purchaseID int64) error {
 	return err
 }
 
+func RakumaOrderLinkedTo(ctx context.Context, db DB, purchaseID int64) (bool, error) {
+	var ok bool
+	err := db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM rakuma_orders WHERE purchase_id = $1)`, purchaseID).Scan(&ok)
+	return ok, err
+}
+
 func SetRakumaDismissed(ctx context.Context, db DB, id int64, dismissed bool) error {
 	_, err := db.Exec(ctx, `UPDATE rakuma_orders SET is_dismissed = $2, updated_at = now() WHERE id = $1`, id, dismissed)
 	return err
