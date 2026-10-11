@@ -219,6 +219,17 @@ func TestReconciledMonthWarnsBeforeChanges(t *testing.T) {
 	if rec := e.ok("GET", "/api/v1/state", nil, 200)["cardReconciliations"].([]any); len(rec) != 1 || num(rec[0].(map[string]any)["amount"]) != -5000 {
 		t.Fatalf("reconciliation kept: %v", rec)
 	}
+	// Picking the card from the table: a checked month asks first; the same card is a no-op
+	if res := e.do("PUT", "/api/v1/purchases/"+id+"/card", map[string]any{"cardId": other}, ""); res.Code != 409 {
+		t.Fatalf("card change in checked month: %d %s", res.Code, res.Body)
+	}
+	if p := e.ok("PUT", "/api/v1/purchases/"+id+"/card?force=true", map[string]any{"cardId": other}, 200); p["cardId"] != other {
+		t.Fatalf("card set: %v", p)
+	}
+	e.ok("PUT", "/api/v1/purchases/"+id+"/card", map[string]any{"cardId": "999"}, 422)
 	e.ok("DELETE", "/api/v1/cards/"+cid+"/reconciliations/2026-09", nil, 204)
+	if p := e.ok("PUT", "/api/v1/purchases/"+id+"/card", map[string]any{"cardId": ""}, 200); p["cardId"] != "0" {
+		t.Fatalf("card cleared: %v", p)
+	}
 	e.ok("DELETE", "/api/v1/purchases/"+id, nil, 204)
 }

@@ -220,3 +220,40 @@ func (s *Service) Unreconcile(ctx context.Context, actor string, cardID int64, m
 		return repo.Audit(ctx, tx, "card_reconciliation", cardID, "unreconcile", actor, map[string]string{"month": month}, nil)
 	})
 }
+
+// SetPurchaseCard sets or clears ("") the card that paid a purchase, straight from the table. Moving the charge out of
+// or into a card month already checked against the statement asks first.
+func (s *Service) SetPurchaseCard(ctx context.Context, actor string, id int64, cardID string, force bool) (models.Purchase, error) {
+	var out models.Purchase
+	err := s.tx(ctx, func(tx pgx.Tx) error {
+		before, err := repo.GetPurchase(ctx, tx, id)
+		if err != nil {
+			return notFound(err)
+		}
+		cid, m := cardFor(ctx, tx, &cardID, before.CardID)
+		if m != "" {
+			return &ValidationError{Fields: map[string]string{"cardId": m}}
+		}
+		if cid == before.CardID {
+			out = before
+			return nil
+		}
+		if !force {
+			w, err := cardMonthWarnings(ctx, tx, [2]any{before.CardID, before.ChargeDate}, [2]any{cid, before.ChargeDate})
+			if err != nil {
+				return err
+			}
+			if len(w) > 0 {
+				return &WarningError{Warnings: w}
+			}
+		}
+		if _, err := tx.Exec(ctx, `UPDATE purchases SET card_id = NULLIF($2, 0), updated_at = now() WHERE id = $1`, id, cid); err != nil {
+			return err
+		}
+		if out, err = repo.GetPurchase(ctx, tx, id); err != nil {
+			return err
+		}
+		return repo.Audit(ctx, tx, "purchase", id, "card", actor, before, out)
+	})
+	return out, err
+}

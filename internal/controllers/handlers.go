@@ -97,6 +97,25 @@ func (h *Handlers) CardLedger(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
+func (h *Handlers) SetPurchaseCard(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	var in struct {
+		CardID string `json:"cardId"`
+	}
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.SetPurchaseCard(c.Request.Context(), actor(c), id, in.CardID, force(c))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
 func (h *Handlers) SetRefundNote(c *gin.Context) {
 	id, ok := idParam(c, "id")
 	if !ok {
