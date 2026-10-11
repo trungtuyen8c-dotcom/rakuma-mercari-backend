@@ -273,6 +273,12 @@ func (s *Service) purchaseFromRakuma(ctx context.Context, tx pgx.Tx, actor strin
 	if p, ok := guessProduct(o.Title, products); ok {
 		in.ProductID = strconv.FormatInt(p.ID, 10)
 	}
+	if c, ok, err := repo.DefaultCard(ctx, tx); err != nil {
+		return false, nil, err
+	} else if ok {
+		id := strconv.FormatInt(c.ID, 10)
+		in.CardID = &id
+	}
 	p, err := s.addPurchase(ctx, tx, actor, in, true)
 	var ve *ValidationError
 	if errors.As(err, &ve) {

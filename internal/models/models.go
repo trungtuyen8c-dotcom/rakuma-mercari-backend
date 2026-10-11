@@ -39,6 +39,8 @@ type Purchase struct {
 	Qty         int    `json:"qty"`
 	Discount    int64  `json:"discount"`
 	Total       int64  `json:"total"`
+	CardID      int64  `json:"cardId,string"` // 0 = no card recorded
+	CardName    string `json:"cardName"`
 	Tracking    string `json:"tracking"`
 	Merged      bool   `json:"merged"`
 	Checked     bool   `json:"checked"`
@@ -149,8 +151,33 @@ type Analysis struct {
 }
 
 // State is everything the web UI needs in one request.
+// Card is a payment card shared with the other projects; it is matched across them by its exact name.
+type Card struct {
+	ID       int64  `json:"id,string"`
+	Name     string `json:"name"`
+	Currency string `json:"currency"`
+	Default  bool   `json:"default"` // card given to purchases the Rakuma sync writes
+	Active   bool   `json:"active"`
+	TxCount  int    `json:"txCount"`
+}
+
+// LedgerRow is one line of a card's ledger, in the same shape as the order project's accounting_wallet_ledger, so
+// the ledgers of every project sharing a card can be added up: card balance = opening (order project) + all rows.
+type LedgerRow struct {
+	ID       string `json:"id"` // stable across reads: "rakuma:purchase:<id>"
+	Wallet   string `json:"wallet"`
+	Currency string `json:"currency"`
+	Project  string `json:"project"` // "rakuma"
+	Date     string `json:"date"`    // YYYY-MM-DD, Japan time (the order date)
+	Amount   int64  `json:"amount"`  // signed; a purchase is negative
+	Type     string `json:"type"`
+	Category string `json:"category"`
+	Note     string `json:"note"`
+}
+
 type State struct {
 	Products  []Product                 `json:"products"`
+	Cards     []Card                    `json:"cards"`
 	Purchases []Purchase                `json:"purchases"`
 	Sales     []Sale                    `json:"sales"`
 	Periods   []Period                  `json:"periods"`

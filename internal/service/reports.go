@@ -212,6 +212,9 @@ func (s *Service) State(ctx context.Context, user *models.User) (models.State, e
 	if st.Products, err = repo.ListProducts(ctx, s.Pool); err != nil {
 		return st, err
 	}
+	if st.Cards, err = repo.ListCards(ctx, s.Pool); err != nil {
+		return st, err
+	}
 	if st.Purchases, err = repo.ListPurchases(ctx, s.Pool, 0); err != nil {
 		return st, err
 	}

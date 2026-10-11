@@ -68,7 +68,7 @@ func (s *Service) SplitPurchase(ctx context.Context, actor string, id int64, lin
 		row := func(l line, link string) repo.PurchaseRow {
 			return repo.PurchaseRow{
 				PeriodID: before.PeriodID, Source: before.Source, Date: ptr(before.Date), Link: ptr(link), ProductID: l.product,
-				Price: l.price, Qty: int(l.qty), Tracking: ptr(before.Tracking), MergeGroup: &group,
+				Price: l.price, Qty: int(l.qty), CardID: before.CardID, Tracking: ptr(before.Tracking), MergeGroup: &group,
 				Checked: before.Checked, Reviewed: before.Reviewed, Note: before.Note,
 			}
 		}

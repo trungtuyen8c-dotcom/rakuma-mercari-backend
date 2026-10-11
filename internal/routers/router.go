@@ -40,6 +40,8 @@ func New(svc *service.Service) *gin.Engine {
 
 	read := api.Group("", middlewares.RequireScope("read", "write"))
 	read.GET("/products", h.ListProducts)
+	read.GET("/cards", h.ListCards)
+	read.GET("/wallet-ledger", h.CardLedger)
 	read.GET("/purchases", h.ListPurchases)
 	read.GET("/sales", h.ListSales)
 	read.GET("/stock", h.Stock)
@@ -70,6 +72,9 @@ func New(svc *service.Service) *gin.Engine {
 	owner.GET("/state", h.State)
 	owner.PUT("/auth/password", a.ChangePassword)
 	owner.PATCH("/products/:id", h.UpdateProduct)
+	owner.POST("/cards", h.CreateCard)
+	owner.PATCH("/cards/:id", h.UpdateCard)
+	owner.DELETE("/cards/:id", h.DeleteCard)
 	owner.DELETE("/products/:id", h.DeleteProduct)
 	owner.PUT("/stock/:product_id/opening", h.SetOpening)
 	owner.POST("/periods/close", h.ClosePeriod)

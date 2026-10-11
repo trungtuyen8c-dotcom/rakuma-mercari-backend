@@ -33,6 +33,70 @@ func (h *Handlers) ListProducts(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
+func (h *Handlers) ListCards(c *gin.Context) {
+	out, err := repo.ListCards(c.Request.Context(), h.Svc.Pool)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func (h *Handlers) CreateCard(c *gin.Context) {
+	var in struct {
+		Name     string `json:"name"`
+		Currency string `json:"currency"`
+	}
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.AddCard(c.Request.Context(), actor(c), in.Name, in.Currency)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, out)
+}
+
+func (h *Handlers) UpdateCard(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	var in service.CardPatch
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.UpdateCard(c.Request.Context(), actor(c), id, in)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func (h *Handlers) DeleteCard(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.Svc.DeleteCard(c.Request.Context(), actor(c), id); err != nil {
+		fail(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// CardLedger: ?from=YYYY-MM-DD&to=YYYY-MM-DD&wallet=<card name>, all optional.
+func (h *Handlers) CardLedger(c *gin.Context) {
+	out, err := h.Svc.CardLedger(c.Request.Context(), c.Query("from"), c.Query("to"), c.Query("wallet"))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
 func (h *Handlers) CreateProduct(c *gin.Context) {
 	var in struct {
 		Name string `json:"name"`
