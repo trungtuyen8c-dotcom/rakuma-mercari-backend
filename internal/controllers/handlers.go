@@ -97,6 +97,79 @@ func (h *Handlers) CardLedger(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
+func (h *Handlers) SetRefundNote(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	var in struct {
+		Note string `json:"note"`
+	}
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.SetRefundNote(c.Request.Context(), actor(c), id, in.Note)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func (h *Handlers) RecordRefund(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	var in service.RefundInput
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.RecordRefund(c.Request.Context(), actor(c), id, in, force(c))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, out)
+}
+
+func (h *Handlers) DeleteRefund(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.Svc.DeleteRefund(c.Request.Context(), actor(c), id, force(c)); err != nil {
+		fail(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *Handlers) Reconcile(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	out, err := h.Svc.Reconcile(c.Request.Context(), actor(c), id, c.Param("month"))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func (h *Handlers) Unreconcile(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.Svc.Unreconcile(c.Request.Context(), actor(c), id, c.Param("month")); err != nil {
+		fail(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 // CardLedgerTotals: ?group=day|week|month&from&to&wallet.
 func (h *Handlers) CardLedgerTotals(c *gin.Context) {
 	out, err := h.Svc.CardLedgerTotals(c.Request.Context(), c.Query("group"), c.Query("from"), c.Query("to"), c.Query("wallet"))
@@ -201,7 +274,7 @@ func (h *Handlers) DeletePurchase(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := h.Svc.DeletePurchase(c.Request.Context(), actor(c), id); err != nil {
+	if err := h.Svc.DeletePurchase(c.Request.Context(), actor(c), id, force(c)); err != nil {
 		fail(c, err)
 		return
 	}

@@ -1,6 +1,8 @@
 package routers_test
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -126,4 +128,97 @@ func TestSyncedAndSplitPurchasesUseTheCard(t *testing.T) {
 	if sum != -30000 {
 		t.Fatalf("card total after split: %d", sum)
 	}
+}
+
+func TestRefundKeepsChargeAndRefundInLedger(t *testing.T) {
+	e := setup(t)
+	pid := e.product("MEGA 30th")
+	card := e.ok("POST", "/api/v1/cards", map[string]any{"name": "4309"}, 201)
+	cid := card["id"].(string)
+	row := func(price int, extra map[string]any) string {
+		m := map[string]any{"date": "2026-09-10", "cardId": cid}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return e.ok("POST", "/api/v1/purchases", purchase(pid, price, 1, 0, m), 201)["id"].(string)
+	}
+	full, part := row(24000, map[string]any{"link": "https://item.fril.jp/F1"}), row(10000, nil)
+	noCard := e.ok("POST", "/api/v1/purchases", purchase(pid, 1000, 1, 0, nil), 201)["id"].(string)
+
+	// Waiting for a refund: a note next to the row
+	if p := e.ok("PUT", "/api/v1/purchases/"+full+"/refund-note", map[string]any{"note": "Shop huỷ đơn, chờ hoàn 3-5 ngày"}, 200); p["refundNote"] != "Shop huỷ đơn, chờ hoàn 3-5 ngày" {
+		t.Fatalf("refund note: %v", p)
+	}
+	e.ok("POST", "/api/v1/purchases/"+noCard+"/refund", map[string]any{}, 422)
+	e.ok("POST", "/api/v1/purchases/"+part+"/refund", map[string]any{"amount": 3000, "removeRow": true}, 422) // only full refunds remove the row
+
+	// Full refund, goods not coming: the row leaves purchases, the ledger keeps the charge and adds the refund
+	e.ok("POST", "/api/v1/purchases/"+full+"/refund", map[string]any{"date": "2026-09-15", "note": "về thẻ", "removeRow": true}, 201)
+	for _, p := range e.ok("GET", "/api/v1/purchases", nil, 200)["_"].([]any) {
+		if p.(map[string]any)["id"] == full {
+			t.Fatal("refunded row still in purchases")
+		}
+	}
+	// Partial refund (one item missing): the row stays
+	e.ok("POST", "/api/v1/purchases/"+part+"/refund", map[string]any{"date": "2026-09-16", "amount": 3000}, 201)
+
+	rows := e.ok("GET", "/api/v1/wallet-ledger?wallet=4309", nil, 200)["_"].([]any)
+	got := []string{}
+	var net int64
+	for _, r := range rows {
+		r := r.(map[string]any)
+		got = append(got, r["date"].(string)+" "+r["category"].(string)+" "+fmt.Sprint(num(r["amount"])))
+		net += int64(num(r["amount"]))
+	}
+	want := "2026-09-10 Mua hàng -24000|2026-09-10 Mua hàng -10000|2026-09-15 Hoàn tiền 24000|2026-09-16 Hoàn tiền 3000"
+	if strings.Join(got, "|") != want || net != -7000 {
+		t.Fatalf("ledger:\n%s\nwant\n%s (net %d)", strings.Join(got, "|"), want, net)
+	}
+	m := e.ok("GET", "/api/v1/wallet-ledger/totals?group=month&wallet=4309", nil, 200)["_"].([]any)
+	if len(m) != 1 || num(m[0].(map[string]any)["amount"]) != -7000 {
+		t.Fatalf("month total: %v", m)
+	}
+	refunds := e.ok("GET", "/api/v1/state", nil, 200)["cardRefunds"].([]any)
+	if len(refunds) != 2 || refunds[0].(map[string]any)["purchaseId"] != "" || num(refunds[0].(map[string]any)["chargeAmount"]) != 24000 {
+		t.Fatalf("refunds: %v", refunds)
+	}
+	// Deleting the refund of a removed row takes its kept charge too
+	e.ok("DELETE", "/api/v1/card-refunds/"+refunds[0].(map[string]any)["id"].(string), nil, 204)
+	if rows := e.ok("GET", "/api/v1/wallet-ledger?wallet=4309", nil, 200)["_"].([]any); len(rows) != 2 {
+		t.Fatalf("after deleting refund: %v", rows)
+	}
+	e.ok("DELETE", "/api/v1/cards/"+cid, nil, 409) // has refunds and purchases
+}
+
+func TestReconciledMonthWarnsBeforeChanges(t *testing.T) {
+	e := setup(t)
+	pid := e.product("MEGA 30th")
+	cid := e.ok("POST", "/api/v1/cards", map[string]any{"name": "4309"}, 201)["id"].(string)
+	id := e.ok("POST", "/api/v1/purchases", purchase(pid, 5000, 1, 0, map[string]any{"date": "2026-09-10", "cardId": cid}), 201)["id"].(string)
+
+	r := e.ok("PUT", "/api/v1/cards/"+cid+"/reconciliations/2026-09", nil, 200)
+	if num(r["amount"]) != -5000 || r["month"] != "2026-09" {
+		t.Fatalf("reconcile: %v", r)
+	}
+	e.ok("PUT", "/api/v1/cards/"+cid+"/reconciliations/2026-9", nil, 422)
+
+	// Changing the price, adding or deleting a carded row in that month asks first; the note-only change does not
+	edit := purchase(pid, 6000, 1, 0, map[string]any{"date": "2026-09-10"})
+	if res := e.do("PUT", "/api/v1/purchases/"+id, edit, ""); res.Code != 409 || !strings.Contains(res.Body.String(), "Tháng 09/2026 của thẻ 4309 đã đối soát") {
+		t.Fatalf("edit warning: %d %s", res.Code, res.Body)
+	}
+	e.ok("PUT", "/api/v1/purchases/"+id, purchase(pid, 5000, 1, 0, map[string]any{"date": "2026-09-10", "note": "ghi chú"}), 200)
+	e.ok("POST", "/api/v1/purchases", purchase(pid, 1000, 1, 0, map[string]any{"date": "2026-09-11", "cardId": cid}), 409)
+	other := e.ok("POST", "/api/v1/cards", map[string]any{"name": "JCB"}, 201)["id"].(string)
+	e.ok("POST", "/api/v1/purchases", purchase(pid, 1000, 1, 0, map[string]any{"date": "2026-09-11", "cardId": other}), 201) // another card's month is not checked
+	e.ok("DELETE", "/api/v1/purchases/"+id, nil, 409)
+	e.ok("POST", "/api/v1/purchases/"+id+"/refund", map[string]any{"date": "2026-09-20"}, 409)
+	e.ok("PUT", "/api/v1/purchases/"+id+"?force=true", edit, 200)
+
+	// The kept amount shows that the month changed after the check
+	if rec := e.ok("GET", "/api/v1/state", nil, 200)["cardReconciliations"].([]any); len(rec) != 1 || num(rec[0].(map[string]any)["amount"]) != -5000 {
+		t.Fatalf("reconciliation kept: %v", rec)
+	}
+	e.ok("DELETE", "/api/v1/cards/"+cid+"/reconciliations/2026-09", nil, 204)
+	e.ok("DELETE", "/api/v1/purchases/"+id, nil, 204)
 }

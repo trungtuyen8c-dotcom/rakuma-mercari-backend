@@ -15,6 +15,7 @@ SELECT * FROM (
          x.source, COALESCE(to_char(x.order_date, 'YYYY-MM-DD'), ''), COALESCE(x.item_url, ''),
          COALESCE(x.product_id, 0), COALESCE(pr.name, ''), x.unit_price, x.quantity, x.unit_discount, x.total,
          COALESCE(x.card_id, 0), COALESCE(cd.name, ''),
+         to_char(COALESCE(x.order_date, (x.created_at AT TIME ZONE 'Asia/Tokyo')::date), 'YYYY-MM-DD'), x.refund_note,
          COALESCE(x.tracking_no, ''), x.merge_group IS NOT NULL, x.is_checked, x.is_reviewed, x.note,
          x.item_url IS NOT NULL AND COUNT(*) OVER (PARTITION BY x.item_url) > 1,
          x.tracking_no IS NOT NULL AND COUNT(*) OVER (PARTITION BY x.tracking_no) > 1
@@ -29,7 +30,7 @@ SELECT * FROM (
 func scanPurchase(row pgx.Row) (models.Purchase, error) {
 	var p models.Purchase
 	err := row.Scan(&p.ID, &p.PeriodID, &p.PeriodLabel, &p.STT, &p.Source, &p.Date, &p.Link, &p.ProductID, &p.ProductName,
-		&p.Price, &p.Qty, &p.Discount, &p.Total, &p.CardID, &p.CardName, &p.Tracking, &p.Merged, &p.Checked, &p.Reviewed, &p.Note,
+		&p.Price, &p.Qty, &p.Discount, &p.Total, &p.CardID, &p.CardName, &p.ChargeDate, &p.RefundNote, &p.Tracking, &p.Merged, &p.Checked, &p.Reviewed, &p.Note,
 		&p.DupLink, &p.DupTracking, &p.Locked)
 	return p, err
 }
@@ -97,6 +98,18 @@ func PurchaseMergeGroup(ctx context.Context, db DB, id int64) (string, error) {
 		return "", err
 	}
 	return *g, err
+}
+
+func SetPurchaseRefundNote(ctx context.Context, db DB, id int64, note string) error {
+	_, err := db.Exec(ctx, `UPDATE purchases SET refund_note = $2, updated_at = now() WHERE id = $1`, id, note)
+	return err
+}
+
+// DismissRakumaForPurchase keeps a removed purchase's Rakuma order out of the queue, so the next sync does not write
+// the row again.
+func DismissRakumaForPurchase(ctx context.Context, db DB, purchaseID int64) error {
+	_, err := db.Exec(ctx, `UPDATE rakuma_orders SET is_dismissed = TRUE, updated_at = now() WHERE purchase_id = $1`, purchaseID)
+	return err
 }
 
 func UpdatePurchase(ctx context.Context, db DB, id int64, r PurchaseRow) error {

@@ -261,6 +261,21 @@ func (s *Service) savePurchase(ctx context.Context, tx pgx.Tx, actor string, in 
 					w = append(w, fmt.Sprintf("Mã vận đơn đã có ở dòng số %s. Nếu các món về chung một kiện, đánh dấu “Đơn gộp” ở tất cả các dòng.", strings.Join(refs, ", ")))
 				}
 			}
+			// A card month already checked against the statement: warn when the charge it holds would change
+			day := date
+			if day == "" {
+				day = before.ChargeDate
+				if editID == 0 {
+					day = jstToday()
+				}
+			}
+			if editID == 0 || before.CardID != cardID || before.ChargeDate != day || before.Total != (price-disc)*qty {
+				cw, err := cardMonthWarnings(ctx, tx, [2]any{before.CardID, before.ChargeDate}, [2]any{cardID, day})
+				if err != nil {
+					return err
+				}
+				w = append(w, cw...)
+			}
 			if len(w) > 0 {
 				return &WarningError{Warnings: w}
 			}
@@ -359,11 +374,25 @@ func (s *Service) SetPurchaseFlags(ctx context.Context, actor string, id int64, 
 	return out, err
 }
 
-func (s *Service) DeletePurchase(ctx context.Context, actor string, id int64) error {
+// DeletePurchase removes a row. Its Rakuma order stays out of the queue so the next sync does not write it again; a
+// row paid by card in a month already checked against the statement asks for confirmation first.
+func (s *Service) DeletePurchase(ctx context.Context, actor string, id int64, force bool) error {
 	return s.tx(ctx, func(tx pgx.Tx) error {
 		before, err := repo.GetPurchase(ctx, tx, id)
 		if err != nil {
 			return notFound(err)
+		}
+		if !force {
+			w, err := cardMonthWarnings(ctx, tx, [2]any{before.CardID, before.ChargeDate})
+			if err != nil {
+				return err
+			}
+			if len(w) > 0 {
+				return &WarningError{Warnings: w}
+			}
+		}
+		if err := repo.DismissRakumaForPurchase(ctx, tx, id); err != nil {
+			return err
 		}
 		if err := repo.DeletePurchase(ctx, tx, id); err != nil {
 			return err
