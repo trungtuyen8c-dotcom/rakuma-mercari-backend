@@ -11,7 +11,7 @@ import (
 // STT = row order inside its period (BR-02). Duplicate flags follow BR-05 / BR-06 (merged shipments are not flagged).
 const purchaseSelect = `
 SELECT * FROM (
-  SELECT x.id, x.period_id, pe.label, row_number() OVER (PARTITION BY x.period_id ORDER BY x.id)::int,
+  SELECT x.id, x.period_id, pe.label, row_number() OVER (PARTITION BY x.period_id ORDER BY x.order_date NULLS LAST, x.id)::int AS stt,
          x.source, COALESCE(to_char(x.order_date, 'YYYY-MM-DD'), ''), COALESCE(x.item_url, ''),
          COALESCE(x.product_id, 0), COALESCE(pr.name, ''), x.unit_price, x.quantity, x.unit_discount, x.total,
          COALESCE(x.tracking_no, ''), x.merge_group IS NOT NULL, x.is_checked, x.is_reviewed, x.note,
@@ -34,7 +34,7 @@ func scanPurchase(row pgx.Row) (models.Purchase, error) {
 
 // ListPurchases returns rows ordered by id; periodID 0 means all periods.
 func ListPurchases(ctx context.Context, db DB, periodID int64) ([]models.Purchase, error) {
-	rows, err := db.Query(ctx, purchaseSelect+` WHERE ($1 = 0 OR period_id = $1) ORDER BY id`, periodID)
+	rows, err := db.Query(ctx, purchaseSelect+` WHERE ($1 = 0 OR period_id = $1) ORDER BY period_id, stt`, periodID)
 	if err != nil {
 		return nil, err
 	}
