@@ -42,6 +42,7 @@ func New(svc *service.Service) *gin.Engine {
 	read.GET("/products", h.ListProducts)
 	read.GET("/cards", h.ListCards)
 	read.GET("/wallet-ledger", h.CardLedger)
+	read.GET("/wallet-ledger/totals", h.CardLedgerTotals)
 	read.GET("/purchases", h.ListPurchases)
 	read.GET("/sales", h.ListSales)
 	read.GET("/stock", h.Stock)

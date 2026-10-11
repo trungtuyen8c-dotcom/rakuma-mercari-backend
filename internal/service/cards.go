@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"time"
 
@@ -147,4 +148,55 @@ func cardFor(ctx context.Context, db repo.DB, in *string, current int64) (int64,
 		return 0, "Chọn thẻ có trong danh sách."
 	}
 	return id, ""
+}
+
+// LedgerTotal is a card's charges added up over one day, week (Monday to Sunday) or month, for checking against the
+// card statement and the other projects.
+type LedgerTotal struct {
+	Period   string `json:"period"` // first day of the day/week/month, YYYY-MM-DD
+	Wallet   string `json:"wallet"`
+	Currency string `json:"currency"`
+	Count    int    `json:"count"`
+	Amount   int64  `json:"amount"` // signed, like the ledger rows
+}
+
+// CardLedgerTotals groups the ledger by day, week or month and card, oldest first.
+func (s *Service) CardLedgerTotals(ctx context.Context, group, from, to, card string) ([]LedgerTotal, error) {
+	if group != "day" && group != "week" && group != "month" {
+		return nil, &ValidationError{Fields: map[string]string{"group": "Chọn day, week hoặc month."}}
+	}
+	rows, err := s.CardLedger(ctx, from, to, card)
+	if err != nil {
+		return nil, err
+	}
+	out := []LedgerTotal{}
+	at := map[string]int{}
+	for _, r := range rows {
+		d, err := time.Parse("2006-01-02", r.Date)
+		if err != nil {
+			return nil, err
+		}
+		switch group {
+		case "week":
+			d = d.AddDate(0, 0, -((int(d.Weekday()) + 6) % 7))
+		case "month":
+			d = time.Date(d.Year(), d.Month(), 1, 0, 0, 0, 0, time.UTC)
+		}
+		k := d.Format("2006-01-02") + "|" + r.Wallet
+		i, ok := at[k]
+		if !ok {
+			i = len(out)
+			at[k] = i
+			out = append(out, LedgerTotal{Period: d.Format("2006-01-02"), Wallet: r.Wallet, Currency: r.Currency})
+		}
+		out[i].Count++
+		out[i].Amount += r.Amount
+	}
+	sort.SliceStable(out, func(a, b int) bool {
+		if out[a].Period != out[b].Period {
+			return out[a].Period < out[b].Period
+		}
+		return out[a].Wallet < out[b].Wallet
+	})
+	return out, nil
 }

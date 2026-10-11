@@ -97,6 +97,16 @@ func (h *Handlers) CardLedger(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
+// CardLedgerTotals: ?group=day|week|month&from&to&wallet.
+func (h *Handlers) CardLedgerTotals(c *gin.Context) {
+	out, err := h.Svc.CardLedgerTotals(c.Request.Context(), c.Query("group"), c.Query("from"), c.Query("to"), c.Query("wallet"))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
 func (h *Handlers) CreateProduct(c *gin.Context) {
 	var in struct {
 		Name string `json:"name"`

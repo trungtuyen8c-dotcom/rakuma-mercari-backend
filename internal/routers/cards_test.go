@@ -52,6 +52,24 @@ func TestPaymentCardsAndLedger(t *testing.T) {
 	}
 	e.ok("GET", "/api/v1/wallet-ledger?from=20260901", nil, 422)
 
+	// Totals per day, week (Monday start) and month, per card
+	e.ok("POST", "/api/v1/purchases", purchase(pid, 5000, 1, 0, map[string]any{"date": "2026-09-22", "cardId": jcb["id"]}), 201) // 09-20 is a Sunday, 09-22 and 09-23 fall in the next week
+	e.ok("POST", "/api/v1/purchases", purchase(pid, 3000, 1, 0, map[string]any{"date": "2026-09-23", "cardId": jcb["id"]}), 201)
+	totals := func(group string) []any {
+		return e.ok("GET", "/api/v1/wallet-ledger/totals?group="+group+"&wallet=JCB", nil, 200)["_"].([]any)
+	}
+	if w := totals("week"); len(w) != 2 || w[0].(map[string]any)["period"] != "2026-09-14" || num(w[0].(map[string]any)["amount"]) != -100000 ||
+		w[1].(map[string]any)["period"] != "2026-09-21" || num(w[1].(map[string]any)["amount"]) != -8000 || num(w[1].(map[string]any)["count"]) != 2 {
+		t.Fatalf("week totals: %v", w)
+	}
+	if m := totals("month"); len(m) != 1 || m[0].(map[string]any)["period"] != "2026-09-01" || num(m[0].(map[string]any)["amount"]) != -108000 {
+		t.Fatalf("month totals: %v", m)
+	}
+	if d := totals("day"); len(d) != 3 {
+		t.Fatalf("day totals: %v", d)
+	}
+	e.ok("GET", "/api/v1/wallet-ledger/totals?group=year", nil, 422)
+
 	// A card in use can be hidden, not deleted; a hidden card cannot be picked for another row
 	e.ok("DELETE", "/api/v1/cards/"+jcb["id"].(string), nil, 409)
 	e.ok("PATCH", "/api/v1/cards/"+jcb["id"].(string), map[string]any{"active": false}, 200)
