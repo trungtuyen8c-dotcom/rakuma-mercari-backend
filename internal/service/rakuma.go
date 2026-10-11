@@ -42,6 +42,7 @@ type RakumaSyncResult struct {
 	Created     int `json:"created"`
 	Updated     int `json:"updated"`
 	TrackingSet int `json:"trackingSet"` // purchases whose tracking number was filled from Rakuma
+	DateSet     int `json:"dateSet"`     // purchases whose empty date was filled from Rakuma
 	Linked      int `json:"linked"`      // queued orders attached to a purchase row already entered with the same link
 	Purchased   int `json:"purchased"`   // purchase rows the sync wrote for paid orders whose link was not on any row
 	NewMessages int `json:"newMessages"`
@@ -181,19 +182,27 @@ func (s *Service) SyncRakuma(ctx context.Context, actor string, orders []RakumaO
 				}
 				continue
 			}
-			if o.Tracking == "" {
-				continue
-			}
 			pid, _ := parseID(*o.PurchaseID)
 			before, err := repo.GetPurchase(ctx, tx, pid)
 			if err != nil {
 				return err
 			}
-			if before.Tracking == o.Tracking {
+			// The purchase date is filled only while the row has none, so a date the owner typed is never replaced
+			fillDate := before.Date == "" && o.Date != ""
+			setTracking := o.Tracking != "" && before.Tracking != o.Tracking
+			if !fillDate && !setTracking {
 				continue
 			}
-			if err := repo.SetPurchaseTracking(ctx, tx, pid, o.Tracking); err != nil {
-				return err
+			if fillDate {
+				if err := repo.FillPurchaseDate(ctx, tx, pid, o.Date); err != nil {
+					return err
+				}
+				res.DateSet++
+			}
+			if setTracking {
+				if err := repo.SetPurchaseTracking(ctx, tx, pid, o.Tracking); err != nil {
+					return err
+				}
 			}
 			after, err := repo.GetPurchase(ctx, tx, pid)
 			if err != nil {
@@ -201,6 +210,9 @@ func (s *Service) SyncRakuma(ctx context.Context, actor string, orders []RakumaO
 			}
 			if err := repo.Audit(ctx, tx, "purchase", pid, "update", actor, before, after); err != nil {
 				return err
+			}
+			if !setTracking {
+				continue
 			}
 			res.TrackingSet++
 			same, err := repo.PurchasesByTracking(ctx, tx, o.Tracking)

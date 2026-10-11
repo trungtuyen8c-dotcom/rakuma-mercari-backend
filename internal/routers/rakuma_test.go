@@ -170,6 +170,40 @@ func TestRakumaSyncLinksPurchaseEnteredByHand(t *testing.T) {
 	}
 }
 
+func TestRakumaSyncFillsMissingPurchaseDate(t *testing.T) {
+	e := setup(t)
+	pid := e.product("MEGA 30th")
+	e.ok("POST", "/api/v1/purchases", purchase(pid, 1000, 1, 0, map[string]any{"link": "https://item.fril.jp/F0", "date": "2026-09-25"}), 201)
+	blank := e.ok("POST", "/api/v1/purchases", purchase(pid, 1000, 1, 0, map[string]any{"link": "https://item.fril.jp/F1"}), 201)
+	typed := e.ok("POST", "/api/v1/purchases", purchase(pid, 1000, 1, 0, map[string]any{"link": "https://item.fril.jp/F2", "date": "2026-09-28"}), 201)
+	rows := func() map[any]map[string]any {
+		out := map[any]map[string]any{}
+		for _, p := range e.ok("GET", "/api/v1/purchases", nil, 200)["_"].([]any) {
+			out[p.(map[string]any)["id"]] = p.(map[string]any)
+		}
+		return out
+	}
+	if r := rows(); num(r[blank["id"]]["stt"]) != 3 {
+		t.Fatalf("dateless row should sort last: %v", r[blank["id"]])
+	}
+
+	// The empty date is filled from Rakuma and the row moves to its place by date; a typed date is kept
+	res := e.ok("POST", "/api/v1/rakuma/sync", map[string]any{"orders": []any{rakumaOrder("F1", nil), rakumaOrder("F2", nil)}}, 200)
+	if num(res["dateSet"]) != 1 {
+		t.Fatalf("dateSet: %v", res)
+	}
+	r := rows()
+	if r[blank["id"]]["date"] != "2026-09-20" || num(r[blank["id"]]["stt"]) != 1 {
+		t.Fatalf("date not filled or row not re-ordered: %v", r[blank["id"]])
+	}
+	if r[typed["id"]]["date"] != "2026-09-28" {
+		t.Fatalf("owner's date replaced: %v", r[typed["id"]])
+	}
+	if res = e.ok("POST", "/api/v1/rakuma/sync", map[string]any{"orders": []any{rakumaOrder("F1", map[string]any{"date": "2026-09-21"})}}, 200); num(res["dateSet"]) != 0 {
+		t.Fatalf("filled date overwritten on re-sync: %v", res)
+	}
+}
+
 func TestRakumaSyncWritesPaidOrdersToPurchases(t *testing.T) {
 	e := setup(t)
 	mega := e.product("MEGA 30th")

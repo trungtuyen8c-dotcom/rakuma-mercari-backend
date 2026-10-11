@@ -208,6 +208,15 @@ func SetPurchaseTracking(ctx context.Context, db DB, id int64, tracking string) 
 	return err
 }
 
+// FillPurchaseDate sets the purchase date on a row without one, and on the rows split from it.
+func FillPurchaseDate(ctx context.Context, db DB, id int64, date string) error {
+	_, err := db.Exec(ctx, `
+		UPDATE purchases SET order_date = $2, updated_at = now()
+		WHERE order_date IS NULL
+		  AND (id = $1 OR merge_group = (SELECT merge_group FROM purchases WHERE id = $1 AND merge_group LIKE 'split:%'))`, id, date)
+	return err
+}
+
 func SetRakumaNotes(ctx context.Context, db DB, id int64, rating, issueNote string) error {
 	_, err := db.Exec(ctx, `UPDATE rakuma_orders SET rating = $2, issue_note = $3, updated_at = now() WHERE id = $1`, id, rating, issueNote)
 	return err
