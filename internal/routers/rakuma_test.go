@@ -1,6 +1,7 @@
 package routers_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -456,5 +457,22 @@ func TestSplitCombinedPurchase(t *testing.T) {
 		if p["tracking"] != "TRK-G" || p["dupTracking"].(bool) {
 			t.Fatalf("tracking after split: %v", p)
 		}
+	}
+}
+
+func TestPurchaseRowsNumberedByOrderDate(t *testing.T) {
+	e := setup(t)
+	pid := e.product("MEGA 30th")
+	late := e.ok("POST", "/api/v1/purchases", purchase(pid, 1000, 1, 0, map[string]any{"date": "2026-09-20"}), 201)
+	early := e.ok("POST", "/api/v1/purchases", purchase(pid, 1000, 1, 0, map[string]any{"date": "2026-09-05"}), 201)
+	e.ok("POST", "/api/v1/purchases", purchase(pid, 1000, 1, 0, nil), 201) // no date: last
+	list := e.ok("GET", "/api/v1/purchases", nil, 200)["_"].([]any)
+	got := []string{}
+	for _, p := range list {
+		p := p.(map[string]any)
+		got = append(got, p["date"].(string)+"#"+strings.TrimSpace(fmt.Sprint(num(p["stt"]))))
+	}
+	if strings.Join(got, " ") != "2026-09-05#1 2026-09-20#2 #3" || early["id"] == late["id"] {
+		t.Fatalf("order: %v", got)
 	}
 }
