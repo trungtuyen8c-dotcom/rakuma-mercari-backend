@@ -361,6 +361,16 @@ func (s *Service) ApproveRakuma(ctx context.Context, actor string, id int64, in 
 		}
 		in.Link = o.Link
 		in.Tracking = o.Tracking
+		if in.CardID == nil { // like the rows the sync writes: paid with the default card unless the owner picked one
+			c, ok, err := repo.DefaultCard(ctx, tx)
+			if err != nil {
+				return err
+			}
+			if ok {
+				id := strconv.FormatInt(c.ID, 10)
+				in.CardID = &id
+			}
+		}
 		if out, err = s.addPurchase(ctx, tx, actor, in, force); err != nil {
 			return err
 		}

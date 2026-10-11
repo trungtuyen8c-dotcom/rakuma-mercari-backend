@@ -79,9 +79,21 @@ func TestSyncedAndSplitPurchasesUseTheCard(t *testing.T) {
 		t.Fatalf("defaults: %v", cards)
 	}
 
+	// A queued order approved by hand also gets the default card
+	o := e.sync("", rakumaOrder("Q1", unpaid))["_"].([]any)[0].(map[string]any)
+	if p := e.ok("POST", "/api/v1/rakuma/orders/"+o["id"].(string)+"/approve", purchase(a, 1000, 1, 0, map[string]any{"date": "2026-09-20"}), 201); p["cardId"] != card["id"] {
+		t.Fatalf("approved row card: %v", p)
+	}
+	e.ok("DELETE", "/api/v1/purchases/"+o["id"].(string), nil, 204)
+
 	// The sync writes the row with the default card; splitting keeps the card and the total
 	e.sync("", rakumaOrder("C1", map[string]any{"price": 30000, "discount": 0}))
-	row := e.ok("GET", "/api/v1/purchases", nil, 200)["_"].([]any)[0].(map[string]any)
+	var row map[string]any
+	for _, p := range e.ok("GET", "/api/v1/purchases", nil, 200)["_"].([]any) {
+		if p := p.(map[string]any); p["link"] == "https://item.fril.jp/C1" {
+			row = p
+		}
+	}
 	if row["cardId"] != card["id"] {
 		t.Fatalf("synced row card: %v", row)
 	}
