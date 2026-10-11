@@ -19,17 +19,18 @@ var (
 )
 
 type PurchaseInput struct {
-	PeriodID  string `json:"periodId"` // optional: an open period; otherwise picked from the date, else the newest open one
-	ProductID string `json:"productId"`
-	Source    string `json:"source"`
-	Date      string `json:"date"`
-	Price     Flex   `json:"price"`
-	Qty       Flex   `json:"qty"`
-	Discount  Flex   `json:"discount"`
-	Tracking  string `json:"tracking"`
-	Merged    bool   `json:"merged"`
-	Link      string `json:"link"`
-	Note      string `json:"note"`
+	PeriodID  string  `json:"periodId"` // optional: an open period; otherwise picked from the date, else the newest open one
+	ProductID string  `json:"productId"`
+	Source    string  `json:"source"`
+	Date      string  `json:"date"`
+	Price     Flex    `json:"price"`
+	Qty       Flex    `json:"qty"`
+	Discount  Flex    `json:"discount"`
+	Tracking  string  `json:"tracking"`
+	Merged    bool    `json:"merged"`
+	Link      string  `json:"link"`
+	Note      string  `json:"note"`
+	CardID    *string `json:"cardId"` // payment card; omitted keeps the row's card, "" clears it
 
 	// noProduct lets a row be saved without a product: rows written by the Rakuma sync, and edits of such rows.
 	noProduct bool
@@ -191,6 +192,10 @@ func (s *Service) savePurchase(ctx context.Context, tx pgx.Tx, actor string, in 
 		} else {
 			e["productId"] = "Chọn sản phẩm có trong danh mục."
 		}
+		cardID, m := cardFor(ctx, tx, in.CardID, before.CardID)
+		if m != "" {
+			e["cardId"] = m
+		}
 		price, pOK := in.Price.int()
 		if !pOK || price <= 0 {
 			e["price"] = "Giá nhập phải là số nguyên lớn hơn 0."
@@ -256,6 +261,21 @@ func (s *Service) savePurchase(ctx context.Context, tx pgx.Tx, actor string, in 
 					w = append(w, fmt.Sprintf("Mã vận đơn đã có ở dòng số %s. Nếu các món về chung một kiện, đánh dấu “Đơn gộp” ở tất cả các dòng.", strings.Join(refs, ", ")))
 				}
 			}
+			// A card month already checked against the statement: warn when the charge it holds would change
+			day := date
+			if day == "" {
+				day = before.ChargeDate
+				if editID == 0 {
+					day = jstToday()
+				}
+			}
+			if editID == 0 || before.CardID != cardID || before.ChargeDate != day || before.Total != (price-disc)*qty {
+				cw, err := cardMonthWarnings(ctx, tx, [2]any{before.CardID, before.ChargeDate}, [2]any{cardID, day})
+				if err != nil {
+					return err
+				}
+				w = append(w, cw...)
+			}
 			if len(w) > 0 {
 				return &WarningError{Warnings: w}
 			}
@@ -263,7 +283,7 @@ func (s *Service) savePurchase(ctx context.Context, tx pgx.Tx, actor string, in 
 
 		row := repo.PurchaseRow{
 			PeriodID: open.ID, Source: source, Date: ptr(date), Link: ptr(link), ProductID: prod.ID,
-			Price: price, Qty: int(qty), Discount: disc, Tracking: ptr(tracking), Note: strings.TrimSpace(in.Note),
+			Price: price, Qty: int(qty), Discount: disc, CardID: cardID, Tracking: ptr(tracking), Note: strings.TrimSpace(in.Note),
 		}
 		if in.Merged { // BR-06: rows of one shipment share a merge_group
 			g := tracking
@@ -354,11 +374,25 @@ func (s *Service) SetPurchaseFlags(ctx context.Context, actor string, id int64, 
 	return out, err
 }
 
-func (s *Service) DeletePurchase(ctx context.Context, actor string, id int64) error {
+// DeletePurchase removes a row. Its Rakuma order stays out of the queue so the next sync does not write it again; a
+// row paid by card in a month already checked against the statement asks for confirmation first.
+func (s *Service) DeletePurchase(ctx context.Context, actor string, id int64, force bool) error {
 	return s.tx(ctx, func(tx pgx.Tx) error {
 		before, err := repo.GetPurchase(ctx, tx, id)
 		if err != nil {
 			return notFound(err)
+		}
+		if !force {
+			w, err := cardMonthWarnings(ctx, tx, [2]any{before.CardID, before.ChargeDate})
+			if err != nil {
+				return err
+			}
+			if len(w) > 0 {
+				return &WarningError{Warnings: w}
+			}
+		}
+		if err := repo.DismissRakumaForPurchase(ctx, tx, id); err != nil {
+			return err
 		}
 		if err := repo.DeletePurchase(ctx, tx, id); err != nil {
 			return err

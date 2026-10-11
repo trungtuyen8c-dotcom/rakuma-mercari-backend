@@ -33,6 +33,153 @@ func (h *Handlers) ListProducts(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
+func (h *Handlers) ListCards(c *gin.Context) {
+	out, err := repo.ListCards(c.Request.Context(), h.Svc.Pool)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func (h *Handlers) CreateCard(c *gin.Context) {
+	var in struct {
+		Name     string `json:"name"`
+		Currency string `json:"currency"`
+	}
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.AddCard(c.Request.Context(), actor(c), in.Name, in.Currency)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, out)
+}
+
+func (h *Handlers) UpdateCard(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	var in service.CardPatch
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.UpdateCard(c.Request.Context(), actor(c), id, in)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func (h *Handlers) DeleteCard(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.Svc.DeleteCard(c.Request.Context(), actor(c), id); err != nil {
+		fail(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// CardLedger: ?from=YYYY-MM-DD&to=YYYY-MM-DD&wallet=<card name>, all optional.
+func (h *Handlers) CardLedger(c *gin.Context) {
+	out, err := h.Svc.CardLedger(c.Request.Context(), c.Query("from"), c.Query("to"), c.Query("wallet"))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func (h *Handlers) SetRefundNote(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	var in struct {
+		Note string `json:"note"`
+	}
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.SetRefundNote(c.Request.Context(), actor(c), id, in.Note)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func (h *Handlers) RecordRefund(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	var in service.RefundInput
+	if !bind(c, &in) {
+		return
+	}
+	out, err := h.Svc.RecordRefund(c.Request.Context(), actor(c), id, in, force(c))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, out)
+}
+
+func (h *Handlers) DeleteRefund(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.Svc.DeleteRefund(c.Request.Context(), actor(c), id, force(c)); err != nil {
+		fail(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *Handlers) Reconcile(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	out, err := h.Svc.Reconcile(c.Request.Context(), actor(c), id, c.Param("month"))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func (h *Handlers) Unreconcile(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.Svc.Unreconcile(c.Request.Context(), actor(c), id, c.Param("month")); err != nil {
+		fail(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// CardLedgerTotals: ?group=day|week|month&from&to&wallet.
+func (h *Handlers) CardLedgerTotals(c *gin.Context) {
+	out, err := h.Svc.CardLedgerTotals(c.Request.Context(), c.Query("group"), c.Query("from"), c.Query("to"), c.Query("wallet"))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
 func (h *Handlers) CreateProduct(c *gin.Context) {
 	var in struct {
 		Name string `json:"name"`
@@ -127,7 +274,7 @@ func (h *Handlers) DeletePurchase(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := h.Svc.DeletePurchase(c.Request.Context(), actor(c), id); err != nil {
+	if err := h.Svc.DeletePurchase(c.Request.Context(), actor(c), id, force(c)); err != nil {
 		fail(c, err)
 		return
 	}

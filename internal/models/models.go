@@ -39,6 +39,10 @@ type Purchase struct {
 	Qty         int    `json:"qty"`
 	Discount    int64  `json:"discount"`
 	Total       int64  `json:"total"`
+	CardID      int64  `json:"cardId,string"` // 0 = no card recorded
+	CardName    string `json:"cardName"`
+	ChargeDate  string `json:"chargeDate"` // the day the card was charged: the order date, else the day the row was entered
+	RefundNote  string `json:"refundNote"` // non-empty while waiting for a refund
 	Tracking    string `json:"tracking"`
 	Merged      bool   `json:"merged"`
 	Checked     bool   `json:"checked"`
@@ -149,17 +153,67 @@ type Analysis struct {
 }
 
 // State is everything the web UI needs in one request.
+// Card is a payment card shared with the other projects; it is matched across them by its exact name.
+type Card struct {
+	ID       int64  `json:"id,string"`
+	Name     string `json:"name"`
+	Currency string `json:"currency"`
+	Default  bool   `json:"default"` // card given to purchases the Rakuma sync writes
+	Active   bool   `json:"active"`
+	TxCount  int    `json:"txCount"`
+}
+
+// LedgerRow is one line of a card's ledger, in the same shape as the order project's accounting_wallet_ledger, so
+// the ledgers of every project sharing a card can be added up: card balance = opening (order project) + all rows.
+type LedgerRow struct {
+	ID       string `json:"id"` // stable across reads: "rakuma:purchase:<id>"
+	Wallet   string `json:"wallet"`
+	Currency string `json:"currency"`
+	Project  string `json:"project"` // "rakuma"
+	Date     string `json:"date"`    // YYYY-MM-DD, Japan time (the order date)
+	Amount   int64  `json:"amount"`  // signed; a purchase is negative
+	Type     string `json:"type"`
+	Category string `json:"category"`
+	Note     string `json:"note"`
+}
+
+// CardRefund is money paid back to a card. PurchaseID is "" once the purchase row was removed after a full refund;
+// the charge is then kept here so the card ledger still shows it.
+type CardRefund struct {
+	ID           int64  `json:"id,string"`
+	PurchaseID   string `json:"purchaseId"`
+	CardID       int64  `json:"cardId,string"`
+	CardName     string `json:"cardName"`
+	ChargeDate   string `json:"chargeDate"`
+	ChargeAmount int64  `json:"chargeAmount"`
+	RefundDate   string `json:"refundDate"`
+	Amount       int64  `json:"amount"`
+	Label        string `json:"label"`
+	Note         string `json:"note"`
+}
+
+// CardReconciliation is a card's month checked against its statement, with the net amount at that moment.
+type CardReconciliation struct {
+	CardID int64  `json:"cardId,string"`
+	Month  string `json:"month"`  // YYYY-MM
+	Amount int64  `json:"amount"` // signed, like the ledger
+	At     string `json:"at"`
+}
+
 type State struct {
-	Products  []Product                 `json:"products"`
-	Purchases []Purchase                `json:"purchases"`
-	Sales     []Sale                    `json:"sales"`
-	Periods   []Period                  `json:"periods"`
-	Openings  map[string]map[string]int `json:"openings"`
-	Adjusts   map[string]map[string]int `json:"stockAdjusts"`
-	APIKeys   []APIKey                  `json:"apiKeys"`
-	Settings  Settings                  `json:"settings"`
-	User      *User                     `json:"user"`
-	Rakuma    []RakumaOrder             `json:"rakuma"`
+	Products   []Product                 `json:"products"`
+	Cards      []Card                    `json:"cards"`
+	Refunds    []CardRefund              `json:"cardRefunds"`
+	Reconciled []CardReconciliation      `json:"cardReconciliations"`
+	Purchases  []Purchase                `json:"purchases"`
+	Sales      []Sale                    `json:"sales"`
+	Periods    []Period                  `json:"periods"`
+	Openings   map[string]map[string]int `json:"openings"`
+	Adjusts    map[string]map[string]int `json:"stockAdjusts"`
+	APIKeys    []APIKey                  `json:"apiKeys"`
+	Settings   Settings                  `json:"settings"`
+	User       *User                     `json:"user"`
+	Rakuma     []RakumaOrder             `json:"rakuma"`
 }
 
 type RakumaMessage struct {
