@@ -233,3 +233,68 @@ func TestReconciledMonthWarnsBeforeChanges(t *testing.T) {
 	}
 	e.ok("DELETE", "/api/v1/purchases/"+id, nil, 204)
 }
+
+func TestPointPayment(t *testing.T) {
+	e := setup(t)
+	pid := e.product("MEGA 30th")
+	visa := e.ok("POST", "/api/v1/cards", map[string]any{"name": "4356"}, 201)
+	e.ok("POST", "/api/v1/purchases", purchase(pid, 25000, 1, 0, map[string]any{"cardId": visa["id"], "points": 5000}), 422) // no point wallet yet
+	pt := e.ok("POST", "/api/v1/cards", map[string]any{"name": "Rakuma point", "currency": "PT"}, 201)
+	e.ok("PATCH", "/api/v1/cards/"+pt["id"].(string), map[string]any{"default": true}, 422)
+	e.ok("POST", "/api/v1/purchases", purchase(pid, 25000, 1, 0, map[string]any{"cardId": pt["id"]}), 422)                     // a point wallet is not a card
+	e.ok("POST", "/api/v1/purchases", purchase(pid, 25000, 1, 0, map[string]any{"pointCardId": visa["id"], "points": 1}), 422) // nor the reverse
+	e.ok("POST", "/api/v1/purchases", purchase(pid, 25000, 1, 0, map[string]any{"points": 25001}), 422)
+
+	// The cost stays the full total (points are capital); the card pays the rest, the only point wallet is picked
+	p := e.ok("POST", "/api/v1/purchases", purchase(pid, 25000, 1, 0, map[string]any{"date": "2026-09-20", "cardId": visa["id"], "points": 5000}), 201)
+	if num(p["total"]) != 25000 || num(p["points"]) != 5000 || p["pointCardId"] != pt["id"] || p["pointCardName"] != "Rakuma point" {
+		t.Fatalf("purchase: %v", p)
+	}
+	id := p["id"].(string)
+	ledger := func() map[string]map[string]any {
+		out := map[string]map[string]any{}
+		for _, r := range e.ok("GET", "/api/v1/wallet-ledger", nil, 200)["_"].([]any) {
+			out[r.(map[string]any)["id"].(string)] = r.(map[string]any)
+		}
+		return out
+	}
+	l := ledger()
+	if c := l["rakuma:purchase:"+id]; c == nil || num(c["amount"]) != -20000 || c["wallet"] != "4356" || c["currency"] != "JPY" {
+		t.Fatalf("card line: %v", l)
+	}
+	if c := l["rakuma:purchase:"+id+":point"]; c == nil || num(c["amount"]) != -5000 || c["wallet"] != "Rakuma point" || c["currency"] != "PT" || c["category"] != "Tiêu point" {
+		t.Fatalf("point line: %v", l)
+	}
+
+	// Editing without points keeps them; paying all in points leaves no card line
+	e.ok("PUT", "/api/v1/purchases/"+id, purchase(pid, 25000, 1, 0, map[string]any{"date": "2026-09-20"}), 200)
+	if l = ledger(); len(l) != 2 {
+		t.Fatalf("points kept: %v", l)
+	}
+	e.ok("PUT", "/api/v1/purchases/"+id, purchase(pid, 25000, 1, 0, map[string]any{"date": "2026-09-20", "points": 25000}), 200)
+	if l = ledger(); len(l) != 1 || l["rakuma:purchase:"+id+":point"] == nil {
+		t.Fatalf("all points: %v", l)
+	}
+	e.ok("POST", "/api/v1/purchases/"+id+"/refund", map[string]any{}, 422) // nothing went on the card
+
+	// A refund gives back only the card part; removing the row needs that part in full
+	e.ok("PUT", "/api/v1/purchases/"+id, purchase(pid, 25000, 1, 0, map[string]any{"date": "2026-09-20", "points": 5000}), 200)
+	e.ok("POST", "/api/v1/purchases/"+id+"/refund", map[string]any{"amount": 25000}, 422)
+	e.ok("POST", "/api/v1/purchases/"+id+"/refund", map[string]any{"amount": 20000, "date": "2026-09-25", "removeRow": true}, 201)
+	l = ledger()
+	if len(l) != 2 || num(l["rakuma:refund:1:charge"]["amount"]) != -20000 || num(l["rakuma:refund:1"]["amount"]) != 20000 {
+		t.Fatalf("after refund: %v", l)
+	}
+
+	// Split: the points stay on the first row, which must hold them
+	q := e.ok("POST", "/api/v1/purchases", purchase(pid, 30000, 1, 0, map[string]any{"date": "2026-09-21", "cardId": visa["id"], "points": 8000}), 201)
+	qid := q["id"].(string)
+	line := func(price int) map[string]any { return map[string]any{"productId": pid, "qty": 1, "price": price} }
+	e.ok("POST", "/api/v1/purchases/"+qid+"/split", map[string]any{"lines": []any{line(5000), line(25000)}}, 422)
+	e.ok("POST", "/api/v1/purchases/"+qid+"/split", map[string]any{"lines": []any{line(20000), line(10000)}}, 200)
+	l = ledger()
+	if num(l["rakuma:purchase:"+qid+":point"]["amount"]) != -8000 || num(l["rakuma:purchase:"+qid]["amount"]) != -12000 {
+		t.Fatalf("split: %v", l)
+	}
+	e.ok("DELETE", "/api/v1/cards/"+pt["id"].(string), nil, 409)
+}

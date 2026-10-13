@@ -26,8 +26,8 @@ func (s *Service) cardNameErr(ctx context.Context, db repo.DB, name string, self
 	return ""
 }
 
-// AddCard registers a payment card. Its name must be exactly the name used in the other projects sharing it.
-// Only yen cards for now: Rakuma purchases are in yen and a card in another currency would need a rate.
+// AddCard registers a payment card (JPY) or a point wallet (PT). Its name must be exactly the name used in the other
+// projects sharing it. No VND card: Rakuma purchases are in yen and a card in another currency would need a rate.
 func (s *Service) AddCard(ctx context.Context, actor, name, currency string) (models.Card, error) {
 	var out models.Card
 	if currency == "" {
@@ -38,8 +38,8 @@ func (s *Service) AddCard(ctx context.Context, actor, name, currency string) (mo
 		if m := s.cardNameErr(ctx, tx, name, 0); m != "" {
 			e["name"] = m
 		}
-		if currency != "JPY" {
-			e["currency"] = "Hiện chỉ hỗ trợ thẻ yên (JPY)."
+		if currency != "JPY" && currency != "PT" {
+			e["currency"] = "Chọn thẻ yên (JPY) hoặc ví point (PT)."
 		}
 		if len(e) > 0 {
 			return &ValidationError{Fields: e}
@@ -87,6 +87,9 @@ func (s *Service) UpdateCard(ctx context.Context, actor string, id int64, p Card
 		if !c.Active {
 			c.Default = false
 		}
+		if c.Default && c.Currency != "JPY" {
+			return &ValidationError{Fields: map[string]string{"default": "Ví point không làm thẻ mặc định được."}}
+		}
 		if err := repo.UpdateCard(ctx, tx, c); err != nil {
 			return err
 		}
@@ -129,9 +132,13 @@ func (s *Service) CardLedger(ctx context.Context, from, to, card string) ([]mode
 	return repo.CardLedger(ctx, s.Pool, from, to, card)
 }
 
-// cardFor resolves a purchase's card: nil keeps the row's current card (or none on a new row), "" or "0" clears it,
-// otherwise an active card (or the row's current one, even if hidden since).
-func cardFor(ctx context.Context, db repo.DB, in *string, current int64) (int64, string) {
+// cardFor resolves a purchase's card (currency JPY) or point wallet (PT): nil keeps the row's current one (or none on a
+// new row), "" or "0" clears it, otherwise an active one (or the row's current one, even if hidden since).
+func cardFor(ctx context.Context, db repo.DB, in *string, current int64, currency string) (int64, string) {
+	bad := "Chọn thẻ có trong danh sách."
+	if currency == "PT" {
+		bad = "Chọn ví point có trong danh sách."
+	}
 	if in == nil {
 		return current, ""
 	}
@@ -141,11 +148,11 @@ func cardFor(ctx context.Context, db repo.DB, in *string, current int64) (int64,
 	}
 	id, ok := parseID(v)
 	if !ok {
-		return 0, "Chọn thẻ có trong danh sách."
+		return 0, bad
 	}
 	c, err := repo.GetCard(ctx, db, id)
-	if err != nil || !c.Active && id != current {
-		return 0, "Chọn thẻ có trong danh sách."
+	if err != nil || !c.Active && id != current || c.Currency != currency {
+		return 0, bad
 	}
 	return id, ""
 }
@@ -199,4 +206,22 @@ func (s *Service) CardLedgerTotals(ctx context.Context, group, from, to, card st
 		return out[a].Wallet < out[b].Wallet
 	})
 	return out, nil
+}
+
+// onlyPointWallet returns the active point wallet when there is exactly one, else 0.
+func onlyPointWallet(ctx context.Context, db repo.DB) (int64, error) {
+	cards, err := repo.ListCards(ctx, db)
+	if err != nil {
+		return 0, err
+	}
+	var id int64
+	for _, c := range cards {
+		if c.Currency == "PT" && c.Active {
+			if id != 0 {
+				return 0, nil
+			}
+			id = c.ID
+		}
+	}
+	return id, nil
 }

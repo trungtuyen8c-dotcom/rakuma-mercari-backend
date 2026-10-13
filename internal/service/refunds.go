@@ -92,15 +92,20 @@ func (s *Service) RecordRefund(ctx context.Context, actor string, id int64, in R
 		} else if _, err := time.Parse("2006-01-02", date); err != nil {
 			e["date"] = "Ngày không hợp lệ."
 		}
-		amount := p.Total
+		// Only the card part comes back to the card; Rakuma returns the points as points
+		charged := p.Total - p.Points
+		if p.CardID != 0 && charged <= 0 {
+			e["card"] = "Dòng này trả hết bằng point, không có tiền thẻ để hoàn."
+		}
+		amount := charged
 		if !in.Amount.empty() {
 			v, ok := in.Amount.int()
-			if !ok || v <= 0 || v > p.Total {
-				e["amount"] = fmt.Sprintf("Số tiền hoàn phải từ 1 đến %s¥.", money(p.Total))
+			if !ok || v <= 0 || v > charged {
+				e["amount"] = fmt.Sprintf("Số tiền hoàn phải từ 1 đến %s¥.", money(charged))
 			}
 			amount = v
 		}
-		if in.RemoveRow && e["amount"] == "" && amount != p.Total {
+		if in.RemoveRow && e["amount"] == "" && amount != charged {
 			e["removeRow"] = "Chỉ xoá dòng nhập khi được hoàn đủ tiền."
 		}
 		if len([]rune(in.Note)) > 300 {
@@ -125,7 +130,7 @@ func (s *Service) RecordRefund(ctx context.Context, actor string, id int64, in R
 		if p.Link != "" {
 			label += " · " + p.Link
 		}
-		rid, err := repo.InsertRefund(ctx, tx, models.CardRefund{CardID: p.CardID, ChargeDate: p.ChargeDate, ChargeAmount: p.Total,
+		rid, err := repo.InsertRefund(ctx, tx, models.CardRefund{CardID: p.CardID, ChargeDate: p.ChargeDate, ChargeAmount: charged,
 			RefundDate: date, Amount: amount, Label: label, Note: strings.TrimSpace(in.Note)}, p.ID)
 		if err != nil {
 			return err
@@ -230,7 +235,7 @@ func (s *Service) SetPurchaseCard(ctx context.Context, actor string, id int64, c
 		if err != nil {
 			return notFound(err)
 		}
-		cid, m := cardFor(ctx, tx, &cardID, before.CardID)
+		cid, m := cardFor(ctx, tx, &cardID, before.CardID, "JPY")
 		if m != "" {
 			return &ValidationError{Fields: map[string]string{"cardId": m}}
 		}

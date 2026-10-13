@@ -41,7 +41,10 @@ type Purchase struct {
 	Total       int64  `json:"total"`
 	CardID      int64  `json:"cardId,string"` // 0 = no card recorded
 	CardName    string `json:"cardName"`
-	ChargeDate  string `json:"chargeDate"` // the day the card was charged: the order date, else the day the row was entered
+	ChargeDate  string `json:"chargeDate"`         // the day the card was charged: the order date, else the day the row was entered
+	Points      int64  `json:"points"`             // part of the total paid with points (1 point = ¥1); the card pays the rest
+	PointCardID int64  `json:"pointCardId,string"` // point wallet the points came from; 0 = none
+	PointCard   string `json:"pointCardName"`
 	RefundNote  string `json:"refundNote"` // non-empty while waiting for a refund
 	Tracking    string `json:"tracking"`
 	Merged      bool   `json:"merged"`
@@ -157,8 +160,8 @@ type Analysis struct {
 type Card struct {
 	ID       int64  `json:"id,string"`
 	Name     string `json:"name"`
-	Currency string `json:"currency"`
-	Default  bool   `json:"default"` // card given to purchases the Rakuma sync writes
+	Currency string `json:"currency"` // JPY = card, PT = point wallet (1 point = ¥1 face value, bought with VND)
+	Default  bool   `json:"default"`  // card given to purchases the Rakuma sync writes
 	Active   bool   `json:"active"`
 	TxCount  int    `json:"txCount"`
 }

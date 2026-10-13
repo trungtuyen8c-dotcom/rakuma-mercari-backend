@@ -57,6 +57,9 @@ func (s *Service) SplitPurchase(ctx context.Context, actor string, id int64, lin
 		if len(e) == 0 && sum != before.Total {
 			e["lines"] = fmt.Sprintf("Tổng các dòng %s¥ phải bằng tổng đơn %s¥ (lệch %s¥).", money(sum), money(before.Total), money(before.Total-sum))
 		}
+		if len(e) == 0 && before.Points > ok[0].qty*ok[0].price { // the points stay on the first row
+			e["lines"] = fmt.Sprintf("Đơn trả %s point: dòng đầu phải từ %s¥ trở lên để giữ số point đó.", money(before.Points), money(before.Points))
+		}
 		if len(e) > 0 {
 			return &ValidationError{Fields: e}
 		}
@@ -72,7 +75,9 @@ func (s *Service) SplitPurchase(ctx context.Context, actor string, id int64, lin
 				Checked: before.Checked, Reviewed: before.Reviewed, Note: before.Note,
 			}
 		}
-		if err := repo.UpdatePurchase(ctx, tx, id, row(ok[0], before.Link)); err != nil {
+		head := row(ok[0], before.Link)
+		head.Points, head.PointCard = before.Points, before.PointCardID
+		if err := repo.UpdatePurchase(ctx, tx, id, head); err != nil {
 			return err
 		}
 		first, err := repo.GetPurchase(ctx, tx, id)
