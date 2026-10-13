@@ -10,7 +10,7 @@ import (
 
 const cardSelect = `
 SELECT c.id, c.name, c.currency, c.is_default, c.is_active,
-       (SELECT COUNT(*) FROM purchases x WHERE x.card_id = c.id) + (SELECT COUNT(*) FROM card_refunds r WHERE r.card_id = c.id)
+       (SELECT COUNT(*) FROM purchases x WHERE x.card_id = c.id OR x.point_card_id = c.id) + (SELECT COUNT(*) FROM card_refunds r WHERE r.card_id = c.id)
 FROM cards c`
 
 func scanCard(row pgx.Row) (models.Card, error) {
@@ -33,7 +33,7 @@ func GetCard(ctx context.Context, db DB, id int64) (models.Card, error) {
 
 // DefaultCard returns the card given to purchases the Rakuma sync writes, or ok=false when none is set.
 func DefaultCard(ctx context.Context, db DB) (models.Card, bool, error) {
-	c, err := scanCard(db.QueryRow(ctx, cardSelect+` WHERE c.is_default AND c.is_active`))
+	c, err := scanCard(db.QueryRow(ctx, cardSelect+` WHERE c.is_default AND c.is_active AND c.currency = 'JPY'`))
 	if err == pgx.ErrNoRows {
 		return c, false, nil
 	}
@@ -67,23 +67,27 @@ func DeleteCard(ctx context.Context, db DB, id int64) error {
 	return err
 }
 
-// CardLedger lists the card lines of this project, oldest first: a charge ("Mua hàng") for each purchase paid by card
-// on its charge date, the charge of a purchase removed after a full refund, and each refund ("Hoàn tiền") on the day
-// the money came back. from/to are YYYY-MM-DD and inclusive; empty means open-ended.
+// CardLedger lists the card lines of this project, oldest first: a charge ("Mua hàng") for the part of each purchase
+// paid by card on its charge date, the points it used ("Tiêu point") on its point wallet, the charge of a purchase
+// removed after a full refund, and each refund ("Hoàn tiền") on the day the money came back. from/to are YYYY-MM-DD
+// and inclusive; empty means open-ended.
 func CardLedger(ctx context.Context, db DB, from, to, card string) ([]models.LedgerRow, error) {
 	rows, err := db.Query(ctx, `
-		WITH lines AS (
-		  SELECT 'rakuma:purchase:' || q.id AS id, q.card_id, q.day, -q.total AS amount, 'out' AS type, 'Mua hàng' AS category,
-		         'Sổ kho Rakuma, kỳ ' || q.label || ' dòng ' || q.stt || COALESCE(' · ' || pr.name, '') || COALESCE(' · ' || q.item_url, '') AS note,
-		         q.id AS ord
-		  FROM (
-		    SELECT x.id, x.card_id, x.product_id, x.total, x.item_url, pe.label,
+		WITH purchase AS (
+		    SELECT x.id, x.card_id, x.point_card_id, x.points, x.total, x.item_url, pe.label,
 		           COALESCE(x.order_date, (x.created_at AT TIME ZONE 'Asia/Tokyo')::date) AS day,
-		           row_number() OVER (PARTITION BY x.period_id ORDER BY x.order_date NULLS LAST, x.id)::int AS stt
-		    FROM purchases x JOIN periods pe ON pe.id = x.period_id
-		  ) q
-		  LEFT JOIN products pr ON pr.id = q.product_id
-		  WHERE q.card_id IS NOT NULL
+		           'Sổ kho Rakuma, kỳ ' || pe.label || ' dòng ' ||
+		             row_number() OVER (PARTITION BY x.period_id ORDER BY x.order_date NULLS LAST, x.id) ||
+		             COALESCE(' · ' || pr.name, '') || COALESCE(' · ' || x.item_url, '') AS note
+		    FROM purchases x JOIN periods pe ON pe.id = x.period_id LEFT JOIN products pr ON pr.id = x.product_id
+		  ),
+		  lines AS (
+		  SELECT 'rakuma:purchase:' || q.id AS id, q.card_id, q.day, -(q.total - q.points) AS amount, 'out' AS type, 'Mua hàng' AS category,
+		         q.note, q.id AS ord
+		  FROM purchase q WHERE q.card_id IS NOT NULL AND q.total > q.points
+		  UNION ALL
+		  SELECT 'rakuma:purchase:' || q.id || ':point', q.point_card_id, q.day, -q.points, 'out', 'Tiêu point', q.note, q.id
+		  FROM purchase q WHERE q.points > 0
 		  UNION ALL
 		  SELECT 'rakuma:refund:' || r.id || ':charge', r.card_id, r.charge_date, -r.charge_amount, 'out', 'Mua hàng',
 		         'Sổ kho Rakuma (dòng đã xoá sau khi hoàn tiền) · ' || r.label, r.id

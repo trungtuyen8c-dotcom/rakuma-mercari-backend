@@ -31,6 +31,10 @@ type PurchaseInput struct {
 	Link      string  `json:"link"`
 	Note      string  `json:"note"`
 	CardID    *string `json:"cardId"` // payment card; omitted keeps the row's card, "" clears it
+	// Points: part of the total paid with points (capital bought with VND), from the point wallet PointCardID; the card
+	// pays the rest. Omitted keeps the row's points; a single point wallet is picked when none is given.
+	Points      Flex    `json:"points"`
+	PointCardID *string `json:"pointCardId"`
 
 	// noProduct lets a row be saved without a product: rows written by the Rakuma sync, and edits of such rows.
 	noProduct bool
@@ -192,9 +196,21 @@ func (s *Service) savePurchase(ctx context.Context, tx pgx.Tx, actor string, in 
 		} else {
 			e["productId"] = "Chọn sản phẩm có trong danh mục."
 		}
-		cardID, m := cardFor(ctx, tx, in.CardID, before.CardID)
+		cardID, m := cardFor(ctx, tx, in.CardID, before.CardID, "JPY")
 		if m != "" {
 			e["cardId"] = m
+		}
+		pointCard, m := cardFor(ctx, tx, in.PointCardID, before.PointCardID, "PT")
+		if m != "" {
+			e["pointCardId"] = m
+		}
+		points := before.Points
+		if !in.Points.empty() {
+			v, ok := in.Points.int()
+			if !ok || v < 0 {
+				e["points"] = "Point phải là số nguyên ≥ 0."
+			}
+			points = v
 		}
 		price, pOK := in.Price.int()
 		if !pOK || price <= 0 {
@@ -214,6 +230,19 @@ func (s *Service) savePurchase(ctx context.Context, tx pgx.Tx, actor string, in 
 		}
 		if e["discount"] == "" && e["price"] == "" && disc > price {
 			e["discount"] = "Giảm giá không được lớn hơn giá nhập." // E4
+		}
+		if total := (price - disc) * qty; len(e) == 0 && points > total {
+			e["points"] = fmt.Sprintf("Point không được lớn hơn tổng đơn %s¥.", money(total))
+		}
+		if points == 0 {
+			pointCard = 0
+		} else if pointCard == 0 && e["pointCardId"] == "" {
+			if pointCard, err = onlyPointWallet(ctx, tx); err != nil {
+				return err
+			}
+			if pointCard == 0 {
+				e["pointCardId"] = "Chọn ví point đã dùng (thêm ví point ở Cài đặt nếu chưa có)."
+			}
 		}
 		link, tracking := strings.TrimSpace(in.Link), strings.TrimSpace(in.Tracking)
 		if link != "" && !reLink.MatchString(link) {
@@ -269,8 +298,10 @@ func (s *Service) savePurchase(ctx context.Context, tx pgx.Tx, actor string, in 
 					day = jstToday()
 				}
 			}
-			if editID == 0 || before.CardID != cardID || before.ChargeDate != day || before.Total != (price-disc)*qty {
-				cw, err := cardMonthWarnings(ctx, tx, [2]any{before.CardID, before.ChargeDate}, [2]any{cardID, day})
+			if editID == 0 || before.CardID != cardID || before.ChargeDate != day || before.Total != (price-disc)*qty ||
+				before.Points != points || before.PointCardID != pointCard {
+				cw, err := cardMonthWarnings(ctx, tx, [2]any{before.CardID, before.ChargeDate}, [2]any{cardID, day},
+					[2]any{before.PointCardID, before.ChargeDate}, [2]any{pointCard, day})
 				if err != nil {
 					return err
 				}
@@ -283,7 +314,8 @@ func (s *Service) savePurchase(ctx context.Context, tx pgx.Tx, actor string, in 
 
 		row := repo.PurchaseRow{
 			PeriodID: open.ID, Source: source, Date: ptr(date), Link: ptr(link), ProductID: prod.ID,
-			Price: price, Qty: int(qty), Discount: disc, CardID: cardID, Tracking: ptr(tracking), Note: strings.TrimSpace(in.Note),
+			Price: price, Qty: int(qty), Discount: disc, CardID: cardID, Points: points, PointCard: pointCard,
+			Tracking: ptr(tracking), Note: strings.TrimSpace(in.Note),
 		}
 		if in.Merged { // BR-06: rows of one shipment share a merge_group
 			g := tracking
@@ -383,7 +415,7 @@ func (s *Service) DeletePurchase(ctx context.Context, actor string, id int64, fo
 			return notFound(err)
 		}
 		if !force {
-			w, err := cardMonthWarnings(ctx, tx, [2]any{before.CardID, before.ChargeDate})
+			w, err := cardMonthWarnings(ctx, tx, [2]any{before.CardID, before.ChargeDate}, [2]any{before.PointCardID, before.ChargeDate})
 			if err != nil {
 				return err
 			}

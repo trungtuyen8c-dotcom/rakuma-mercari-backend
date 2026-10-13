@@ -14,7 +14,7 @@ SELECT * FROM (
   SELECT x.id, x.period_id, pe.label, row_number() OVER (PARTITION BY x.period_id ORDER BY x.order_date NULLS LAST, x.id)::int AS stt,
          x.source, COALESCE(to_char(x.order_date, 'YYYY-MM-DD'), ''), COALESCE(x.item_url, ''),
          COALESCE(x.product_id, 0), COALESCE(pr.name, ''), x.unit_price, x.quantity, x.unit_discount, x.total,
-         COALESCE(x.card_id, 0), COALESCE(cd.name, ''),
+         COALESCE(x.card_id, 0), COALESCE(cd.name, ''), x.points, COALESCE(x.point_card_id, 0), COALESCE(pc.name, ''),
          to_char(COALESCE(x.order_date, (x.created_at AT TIME ZONE 'Asia/Tokyo')::date), 'YYYY-MM-DD'), x.refund_note,
          COALESCE(x.tracking_no, ''), x.merge_group IS NOT NULL, x.is_checked, x.is_reviewed, x.note,
          x.item_url IS NOT NULL AND COUNT(*) OVER (PARTITION BY x.item_url) > 1,
@@ -25,12 +25,13 @@ SELECT * FROM (
   JOIN periods pe ON pe.id = x.period_id
   LEFT JOIN products pr ON pr.id = x.product_id
   LEFT JOIN cards cd ON cd.id = x.card_id
+  LEFT JOIN cards pc ON pc.id = x.point_card_id
 ) q`
 
 func scanPurchase(row pgx.Row) (models.Purchase, error) {
 	var p models.Purchase
 	err := row.Scan(&p.ID, &p.PeriodID, &p.PeriodLabel, &p.STT, &p.Source, &p.Date, &p.Link, &p.ProductID, &p.ProductName,
-		&p.Price, &p.Qty, &p.Discount, &p.Total, &p.CardID, &p.CardName, &p.ChargeDate, &p.RefundNote, &p.Tracking, &p.Merged, &p.Checked, &p.Reviewed, &p.Note,
+		&p.Price, &p.Qty, &p.Discount, &p.Total, &p.CardID, &p.CardName, &p.Points, &p.PointCardID, &p.PointCard, &p.ChargeDate, &p.RefundNote, &p.Tracking, &p.Merged, &p.Checked, &p.Reviewed, &p.Note,
 		&p.DupLink, &p.DupTracking, &p.Locked)
 	return p, err
 }
@@ -74,6 +75,8 @@ type PurchaseRow struct {
 	Qty        int
 	Discount   int64
 	CardID     int64 // 0 = none
+	Points     int64
+	PointCard  int64 // 0 = none
 	Tracking   *string
 	MergeGroup *string
 	Checked    bool
@@ -85,9 +88,10 @@ func InsertPurchase(ctx context.Context, db DB, r PurchaseRow) (int64, error) {
 	var id int64
 	err := db.QueryRow(ctx, `
 		INSERT INTO purchases (period_id, source, order_date, item_url, product_id, unit_price, quantity, unit_discount,
-		                       tracking_no, merge_group, is_checked, is_reviewed, note, card_id)
-		VALUES ($1, $2, $3, $4, NULLIF($5, 0), $6, $7, $8, $9, $10, $11, $12, $13, NULLIF($14, 0)) RETURNING id`,
-		r.PeriodID, r.Source, r.Date, r.Link, r.ProductID, r.Price, r.Qty, r.Discount, r.Tracking, r.MergeGroup, r.Checked, r.Reviewed, r.Note, r.CardID).Scan(&id)
+		                       tracking_no, merge_group, is_checked, is_reviewed, note, card_id, points, point_card_id)
+		VALUES ($1, $2, $3, $4, NULLIF($5, 0), $6, $7, $8, $9, $10, $11, $12, $13, NULLIF($14, 0), $15, NULLIF($16, 0)) RETURNING id`,
+		r.PeriodID, r.Source, r.Date, r.Link, r.ProductID, r.Price, r.Qty, r.Discount, r.Tracking, r.MergeGroup, r.Checked, r.Reviewed, r.Note, r.CardID,
+		r.Points, r.PointCard).Scan(&id)
 	return id, err
 }
 
@@ -116,9 +120,10 @@ func UpdatePurchase(ctx context.Context, db DB, id int64, r PurchaseRow) error {
 	_, err := db.Exec(ctx, `
 		UPDATE purchases SET period_id = $2, source = $3, order_date = $4, item_url = $5, product_id = NULLIF($6, 0), unit_price = $7,
 		       quantity = $8, unit_discount = $9, tracking_no = $10, merge_group = $11, is_checked = $12, is_reviewed = $13,
-		       note = $14, card_id = NULLIF($15, 0), updated_at = now()
+		       note = $14, card_id = NULLIF($15, 0), points = $16, point_card_id = NULLIF($17, 0), updated_at = now()
 		WHERE id = $1`,
-		id, r.PeriodID, r.Source, r.Date, r.Link, r.ProductID, r.Price, r.Qty, r.Discount, r.Tracking, r.MergeGroup, r.Checked, r.Reviewed, r.Note, r.CardID)
+		id, r.PeriodID, r.Source, r.Date, r.Link, r.ProductID, r.Price, r.Qty, r.Discount, r.Tracking, r.MergeGroup, r.Checked, r.Reviewed, r.Note, r.CardID,
+		r.Points, r.PointCard)
 	return err
 }
 
