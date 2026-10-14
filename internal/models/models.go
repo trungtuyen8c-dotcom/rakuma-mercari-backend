@@ -259,6 +259,8 @@ type RakumaOrder struct {
 	DismissedBy   string `json:"dismissedBy"`
 	DismissKind   string `json:"dismissKind"`
 	DismissReason string `json:"dismissReason"`
+	// TrackingFromChat: the tracking number was read from the seller's message (shipped without らくまパック)
+	TrackingFromChat bool `json:"trackingFromChat"`
 }
 
 type RakumaReply struct {

@@ -16,14 +16,15 @@ SELECT o.id, o.order_no, o.item_url, o.title, o.image_url, o.status, COALESCE(to
           AND (o.messages_handled_at IS NULL OR m.created_at > o.messages_handled_at))::int,
        to_char(o.synced_at AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI'),
        COALESCE(to_char(o.missing_since AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI'), ''),
-       COALESCE(to_char(o.dismissed_at AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI'), ''), o.dismissed_by, o.dismiss_kind, o.dismiss_reason
+       COALESCE(to_char(o.dismissed_at AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI'), ''), o.dismissed_by, o.dismiss_kind, o.dismiss_reason,
+       o.tracking_from_chat
 FROM rakuma_orders o`
 
 func scanRakuma(row pgx.Row) (models.RakumaOrder, error) {
 	var o models.RakumaOrder
 	err := row.Scan(&o.ID, &o.OrderNo, &o.Link, &o.Title, &o.Image, &o.Status, &o.Date, &o.Price, &o.Discount, &o.Carrier,
 		&o.Tracking, &o.Seller, &o.Summary, &o.ReplyDraft, &o.Rating, &o.IssueNote, &o.PurchaseID, &o.Dismissed, &o.ChatOpen, &o.NewMessages, &o.SyncedAt, &o.MissingSince,
-		&o.DismissedAt, &o.DismissedBy, &o.DismissKind, &o.DismissReason)
+		&o.DismissedAt, &o.DismissedBy, &o.DismissKind, &o.DismissReason, &o.TrackingFromChat)
 	return o, err
 }
 
@@ -159,6 +160,7 @@ func UpsertRakumaOrder(ctx context.Context, db DB, r RakumaRow) (id int64, creat
 			discount    = CASE WHEN EXCLUDED.price = 0 THEN rakuma_orders.discount ELSE EXCLUDED.discount END,
 			carrier     = CASE WHEN EXCLUDED.carrier = '' THEN rakuma_orders.carrier ELSE EXCLUDED.carrier END,
 			tracking_no = COALESCE(EXCLUDED.tracking_no, rakuma_orders.tracking_no),
+			tracking_from_chat = EXCLUDED.tracking_no IS NULL AND rakuma_orders.tracking_from_chat,
 			seller      = CASE WHEN EXCLUDED.seller = '' THEN rakuma_orders.seller ELSE EXCLUDED.seller END,
 			summary     = CASE WHEN EXCLUDED.summary = '' THEN rakuma_orders.summary ELSE EXCLUDED.summary END,
 			reply_draft = CASE WHEN EXCLUDED.reply_draft = '' THEN rakuma_orders.reply_draft ELSE EXCLUDED.reply_draft END,
@@ -199,6 +201,28 @@ func SetRakumaDismissed(ctx context.Context, db DB, id int64, actor, kind, reaso
 		       dismissed_by = CASE WHEN $2 <> '' THEN $3 ELSE '' END, dismiss_kind = $2, dismiss_reason = CASE WHEN $2 <> '' THEN $4 ELSE '' END,
 		       updated_at = now()
 		WHERE id = $1`, id, kind, actor, reason)
+	return err
+}
+
+// SetRakumaTrackingIfEmpty stores a tracking number read from the chat on an order that has none yet.
+func SetRakumaTrackingIfEmpty(ctx context.Context, db DB, id int64, tracking, carrier string) error {
+	_, err := db.Exec(ctx, `
+		UPDATE rakuma_orders SET tracking_no = $2, carrier = CASE WHEN carrier = '' THEN $3 ELSE carrier END, tracking_from_chat = TRUE,
+		       updated_at = now()
+		WHERE id = $1 AND COALESCE(tracking_no, '') = ''`, id, tracking, carrier)
+	return err
+}
+
+// RakumaSellerOfPurchase returns the seller of the Rakuma order linked to a purchase row, "" when none is.
+func RakumaSellerOfPurchase(ctx context.Context, db DB, purchaseID int64) (string, error) {
+	var seller string
+	err := db.QueryRow(ctx, `SELECT COALESCE((SELECT seller FROM rakuma_orders WHERE purchase_id = $1 LIMIT 1), '')`, purchaseID).Scan(&seller)
+	return seller, err
+}
+
+// SetPurchasesMerged puts rows shipped in one parcel into one merge group (BR-06), named after the tracking number.
+func SetPurchasesMerged(ctx context.Context, db DB, ids []int64, group string) error {
+	_, err := db.Exec(ctx, `UPDATE purchases SET merge_group = $2, updated_at = now() WHERE id = ANY($1)`, ids, group)
 	return err
 }
 
