@@ -139,7 +139,8 @@ func (s *Service) RecordRefund(ctx context.Context, actor string, id int64, in R
 			return err
 		}
 		if in.RemoveRow {
-			if err := repo.DismissRakumaForPurchase(ctx, tx, id); err != nil {
+			reason := fmt.Sprintf("Hoàn tiền đủ và xoá dòng nhập #%d (kỳ %s dòng %d, %s¥)", id, p.PeriodLabel, p.STT, money(p.Total))
+			if err := repo.DismissRakumaForPurchase(ctx, tx, id, actor, "refund_removed", reason); err != nil {
 				return err
 			}
 			if err := repo.DeletePurchase(ctx, tx, id); err != nil {

@@ -110,9 +110,12 @@ func SetPurchaseRefundNote(ctx context.Context, db DB, id int64, note string) er
 }
 
 // DismissRakumaForPurchase keeps a removed purchase's Rakuma order out of the queue, so the next sync does not write
-// the row again.
-func DismissRakumaForPurchase(ctx context.Context, db DB, purchaseID int64) error {
-	_, err := db.Exec(ctx, `UPDATE rakuma_orders SET is_dismissed = TRUE, updated_at = now() WHERE purchase_id = $1`, purchaseID)
+// the row again, and records who removed it and why (kind row_deleted or refund_removed).
+func DismissRakumaForPurchase(ctx context.Context, db DB, purchaseID int64, actor, kind, reason string) error {
+	_, err := db.Exec(ctx, `
+		UPDATE rakuma_orders SET is_dismissed = TRUE, dismissed_at = now(), dismissed_by = $2, dismiss_kind = $3, dismiss_reason = $4,
+		       updated_at = now()
+		WHERE purchase_id = $1`, purchaseID, actor, kind, reason)
 	return err
 }
 

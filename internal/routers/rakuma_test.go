@@ -510,3 +510,60 @@ func TestPurchaseRowsNumberedByOrderDate(t *testing.T) {
 		t.Fatalf("order: %v", got)
 	}
 }
+
+func TestRakumaDismissHistoryAndRestore(t *testing.T) {
+	e := setup(t)
+	pid := e.product("MEGA 30th")
+	order := func(no string) map[string]any {
+		for _, o := range e.ok("GET", "/api/v1/rakuma/orders", nil, 200)["_"].([]any) {
+			if o := o.(map[string]any); o["orderNo"] == no {
+				return o
+			}
+		}
+		t.Fatalf("order %s not found", no)
+		return nil
+	}
+
+	// Deleting the row the sync wrote skips the order, with who, when and which row
+	e.sync("", rakumaOrder("A1", map[string]any{"tracking": "TA1"}))
+	a := order("A1")
+	var row map[string]any
+	for _, p := range e.ok("GET", "/api/v1/purchases", nil, 200)["_"].([]any) {
+		if p.(map[string]any)["id"] == a["purchaseId"] {
+			row = p.(map[string]any)
+		}
+	}
+	e.ok("DELETE", "/api/v1/purchases/"+row["id"].(string), nil, 204)
+	a = order("A1")
+	if a["dismissed"] != true || a["purchaseId"] != nil || a["dismissKind"] != "row_deleted" || a["dismissedBy"] != owner || a["dismissedAt"] == "" ||
+		!strings.Contains(a["dismissReason"].(string), "Đã xoá dòng nhập #"+row["id"].(string)) {
+		t.Fatalf("row deleted: %v", a)
+	}
+	// Restoring with no row for its link puts it back in the queue, history cleared
+	a = e.ok("POST", "/api/v1/rakuma/orders/"+a["id"].(string)+"/dismiss", map[string]any{"dismissed": false}, 200)
+	if a["dismissed"] != false || a["purchaseId"] != nil || a["dismissKind"] != "" || a["dismissedAt"] != "" {
+		t.Fatalf("restored: %v", a)
+	}
+	// "Tạo dòng nhập hàng" on a skipped order writes the row and clears the skip
+	e.ok("POST", "/api/v1/rakuma/orders/"+a["id"].(string)+"/dismiss", map[string]any{"dismissed": true, "reason": "  trùng đơn khác  "}, 200)
+	if a = order("A1"); a["dismissKind"] != "manual" || a["dismissReason"] != "trùng đơn khác" {
+		t.Fatalf("manual: %v", a)
+	}
+	e.ok("POST", "/api/v1/rakuma/orders/"+a["id"].(string)+"/approve", purchase(pid, 18000, 1, 900, map[string]any{"date": "2026-09-20"}), 201)
+	if a = order("A1"); a["dismissed"] != false || a["purchaseId"] == nil || a["dismissKind"] != "" {
+		t.Fatalf("approved from skipped: %v", a)
+	}
+
+	// Restoring links the order to the one row that carries its link (a row entered by hand after it was skipped)
+	e.sync("", rakumaOrder("B1", unpaid))
+	b := order("B1")
+	e.ok("POST", "/api/v1/rakuma/orders/"+b["id"].(string)+"/dismiss", map[string]any{"dismissed": true}, 200)
+	if b = order("B1"); b["dismissReason"] != "Bấm Bỏ qua" {
+		t.Fatalf("default reason: %v", b)
+	}
+	hand := e.ok("POST", "/api/v1/purchases", purchase(pid, 17100, 1, 0, map[string]any{"link": "https://item.fril.jp/B1"}), 201)
+	b = e.ok("POST", "/api/v1/rakuma/orders/"+b["id"].(string)+"/dismiss", map[string]any{"dismissed": false}, 200)
+	if b["purchaseId"] != hand["id"] || b["dismissed"] != false {
+		t.Fatalf("restore did not link: %v", b)
+	}
+}

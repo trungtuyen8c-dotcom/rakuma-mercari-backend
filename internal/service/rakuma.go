@@ -394,8 +394,29 @@ func (s *Service) ApproveRakuma(ctx context.Context, actor string, id int64, in 
 	return out, err
 }
 
-func (s *Service) DismissRakuma(ctx context.Context, actor string, id int64, dismissed bool) (models.RakumaOrder, error) {
-	return s.updateRakuma(ctx, actor, id, "dismiss", func(tx pgx.Tx, _ models.RakumaOrder) error { return repo.SetRakumaDismissed(ctx, tx, id, dismissed) })
+// DismissRakuma skips an order (kept with who, when and why) or restores it. A restored order is linked at once to the
+// purchase row with its item link when exactly one row has it, as the sync would; otherwise it goes back to the queue.
+func (s *Service) DismissRakuma(ctx context.Context, actor string, id int64, dismissed bool, reason string) (models.RakumaOrder, error) {
+	return s.updateRakuma(ctx, actor, id, "dismiss", func(tx pgx.Tx, o models.RakumaOrder) error {
+		if dismissed {
+			reason = strings.TrimSpace(reason)
+			if len([]rune(reason)) > 300 {
+				return &ValidationError{Fields: map[string]string{"reason": "Lý do tối đa 300 ký tự."}}
+			}
+			if reason == "" {
+				reason = "Bấm Bỏ qua"
+			}
+			return repo.SetRakumaDismissed(ctx, tx, id, actor, "manual", reason)
+		}
+		if err := repo.SetRakumaDismissed(ctx, tx, id, "", "", ""); err != nil {
+			return err
+		}
+		if o.PurchaseID != nil {
+			return nil
+		}
+		_, err := linkEnteredPurchase(ctx, tx, actor, &o)
+		return err
+	})
 }
 
 func (s *Service) HandleRakumaMessages(ctx context.Context, actor string, id int64) (models.RakumaOrder, error) {
