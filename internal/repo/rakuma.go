@@ -15,13 +15,15 @@ SELECT o.id, o.order_no, o.item_url, o.title, o.image_url, o.status, COALESCE(to
        (SELECT COUNT(*) FROM rakuma_messages m WHERE m.order_id = o.id AND m.sender = 'seller'
           AND (o.messages_handled_at IS NULL OR m.created_at > o.messages_handled_at))::int,
        to_char(o.synced_at AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI'),
-       COALESCE(to_char(o.missing_since AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI'), '')
+       COALESCE(to_char(o.missing_since AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI'), ''),
+       COALESCE(to_char(o.dismissed_at AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI'), ''), o.dismissed_by, o.dismiss_kind, o.dismiss_reason
 FROM rakuma_orders o`
 
 func scanRakuma(row pgx.Row) (models.RakumaOrder, error) {
 	var o models.RakumaOrder
 	err := row.Scan(&o.ID, &o.OrderNo, &o.Link, &o.Title, &o.Image, &o.Status, &o.Date, &o.Price, &o.Discount, &o.Carrier,
-		&o.Tracking, &o.Seller, &o.Summary, &o.ReplyDraft, &o.Rating, &o.IssueNote, &o.PurchaseID, &o.Dismissed, &o.ChatOpen, &o.NewMessages, &o.SyncedAt, &o.MissingSince)
+		&o.Tracking, &o.Seller, &o.Summary, &o.ReplyDraft, &o.Rating, &o.IssueNote, &o.PurchaseID, &o.Dismissed, &o.ChatOpen, &o.NewMessages, &o.SyncedAt, &o.MissingSince,
+		&o.DismissedAt, &o.DismissedBy, &o.DismissKind, &o.DismissReason)
 	return o, err
 }
 
@@ -179,7 +181,8 @@ func InsertRakumaMessage(ctx context.Context, db DB, orderID int64, sender, sent
 }
 
 func SetRakumaPurchase(ctx context.Context, db DB, id, purchaseID int64) error {
-	_, err := db.Exec(ctx, `UPDATE rakuma_orders SET purchase_id = $2, is_dismissed = FALSE, updated_at = now() WHERE id = $1`, id, purchaseID)
+	_, err := db.Exec(ctx, `UPDATE rakuma_orders SET purchase_id = $2, is_dismissed = FALSE, dismissed_at = NULL, dismissed_by = '',
+		dismiss_kind = '', dismiss_reason = '', updated_at = now() WHERE id = $1`, id, purchaseID)
 	return err
 }
 
@@ -189,8 +192,13 @@ func RakumaOrderLinkedTo(ctx context.Context, db DB, purchaseID int64) (bool, er
 	return ok, err
 }
 
-func SetRakumaDismissed(ctx context.Context, db DB, id int64, dismissed bool) error {
-	_, err := db.Exec(ctx, `UPDATE rakuma_orders SET is_dismissed = $2, updated_at = now() WHERE id = $1`, id, dismissed)
+// SetRakumaDismissed skips an order with who, which kind (manual, row_deleted, refund_removed) and why; kind "" restores it.
+func SetRakumaDismissed(ctx context.Context, db DB, id int64, actor, kind, reason string) error {
+	_, err := db.Exec(ctx, `
+		UPDATE rakuma_orders SET is_dismissed = $2 <> '', dismissed_at = CASE WHEN $2 <> '' THEN now() END,
+		       dismissed_by = CASE WHEN $2 <> '' THEN $3 ELSE '' END, dismiss_kind = $2, dismiss_reason = CASE WHEN $2 <> '' THEN $4 ELSE '' END,
+		       updated_at = now()
+		WHERE id = $1`, id, kind, actor, reason)
 	return err
 }
 

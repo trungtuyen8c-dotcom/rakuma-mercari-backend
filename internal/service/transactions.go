@@ -423,7 +423,8 @@ func (s *Service) DeletePurchase(ctx context.Context, actor string, id int64, fo
 				return &WarningError{Warnings: w}
 			}
 		}
-		if err := repo.DismissRakumaForPurchase(ctx, tx, id); err != nil {
+		reason := fmt.Sprintf("Đã xoá dòng nhập #%d (kỳ %s dòng %d, %s¥)", id, before.PeriodLabel, before.STT, money(before.Total))
+		if err := repo.DismissRakumaForPurchase(ctx, tx, id, actor, "row_deleted", reason); err != nil {
 			return err
 		}
 		if err := repo.DeletePurchase(ctx, tx, id); err != nil {

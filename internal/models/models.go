@@ -254,6 +254,11 @@ type RakumaOrder struct {
 	SyncedAt    string          `json:"syncedAt"`
 	// MissingSince: when an unfinished order stopped appearing on Rakuma ("" = listed); the owner should check it
 	MissingSince string `json:"missingSince"`
+	// Why the order was skipped (Dismissed): when (JST), by whom, kind manual | row_deleted | refund_removed | unknown
+	DismissedAt   string `json:"dismissedAt"`
+	DismissedBy   string `json:"dismissedBy"`
+	DismissKind   string `json:"dismissKind"`
+	DismissReason string `json:"dismissReason"`
 }
 
 type RakumaReply struct {

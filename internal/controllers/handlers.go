@@ -517,12 +517,13 @@ func (h *Handlers) DismissRakuma(c *gin.Context) {
 		return
 	}
 	var in struct {
-		Dismissed bool `json:"dismissed"`
+		Dismissed bool   `json:"dismissed"`
+		Reason    string `json:"reason"`
 	}
 	if !bind(c, &in) {
 		return
 	}
-	out, err := h.Svc.DismissRakuma(c.Request.Context(), actor(c), id, in.Dismissed)
+	out, err := h.Svc.DismissRakuma(c.Request.Context(), actor(c), id, in.Dismissed, in.Reason)
 	if err != nil {
 		fail(c, err)
 		return
