@@ -15,7 +15,8 @@ import (
 type SplitLine struct {
 	ProductID string `json:"productId"`
 	Qty       Flex   `json:"qty"`
-	Price     Flex   `json:"price"` // per item, after any discount
+	Price     Flex   `json:"price"`    // per item
+	Discount  Flex   `json:"discount"` // per item; empty = 0. Lets an order-wide discount (400¥ off 3 items) add up exactly
 }
 
 // SplitPurchase turns one row that holds a combined order into one row per product, like the owner's sheet: the first
@@ -33,8 +34,8 @@ func (s *Service) SplitPurchase(ctx context.Context, actor string, id int64, lin
 			e["lines"] = "Đơn gộp cần ít nhất 2 sản phẩm."
 		}
 		type line struct {
-			product    int64
-			qty, price int64
+			product          int64
+			qty, price, disc int64
 		}
 		ok := make([]line, len(lines))
 		var sum int64
@@ -51,13 +52,21 @@ func (s *Service) SplitPurchase(ctx context.Context, actor string, id int64, lin
 			if !pOK || price <= 0 {
 				e[fmt.Sprintf("lines.%d.price", i)] = "Giá nhập phải là số nguyên lớn hơn 0."
 			}
-			ok[i] = line{p.ID, qty, price}
-			sum += qty * price
+			var disc int64
+			if !l.Discount.empty() {
+				v, dOK := l.Discount.int()
+				if !dOK || v < 0 || pOK && v > price {
+					e[fmt.Sprintf("lines.%d.discount", i)] = "Giảm giá mỗi cái phải từ 0 đến giá nhập."
+				}
+				disc = v
+			}
+			ok[i] = line{p.ID, qty, price, disc}
+			sum += qty * (price - disc)
 		}
 		if len(e) == 0 && sum != before.Total {
 			e["lines"] = fmt.Sprintf("Tổng các dòng %s¥ phải bằng tổng đơn %s¥ (lệch %s¥).", money(sum), money(before.Total), money(before.Total-sum))
 		}
-		if len(e) == 0 && before.Points > ok[0].qty*ok[0].price { // the points stay on the first row
+		if len(e) == 0 && before.Points > ok[0].qty*(ok[0].price-ok[0].disc) { // the points stay on the first row
 			e["lines"] = fmt.Sprintf("Đơn trả %s point: dòng đầu phải từ %s¥ trở lên để giữ số point đó.", money(before.Points), money(before.Points))
 		}
 		if len(e) > 0 {
@@ -71,7 +80,7 @@ func (s *Service) SplitPurchase(ctx context.Context, actor string, id int64, lin
 		row := func(l line, link string) repo.PurchaseRow {
 			return repo.PurchaseRow{
 				PeriodID: before.PeriodID, Source: before.Source, Date: ptr(before.Date), Link: ptr(link), ProductID: l.product,
-				Price: l.price, Qty: int(l.qty), CardID: before.CardID, Tracking: ptr(before.Tracking), MergeGroup: &group,
+				Price: l.price, Qty: int(l.qty), Discount: l.disc, CardID: before.CardID, Tracking: ptr(before.Tracking), MergeGroup: &group,
 				Checked: before.Checked, Reviewed: before.Reviewed, Note: before.Note,
 			}
 		}

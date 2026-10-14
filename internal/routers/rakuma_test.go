@@ -616,3 +616,28 @@ func TestRakumaTrackingFromChat(t *testing.T) {
 		}
 	}
 }
+
+func TestSplitSpreadsOrderDiscount(t *testing.T) {
+	e := setup(t)
+	pid := e.product("MEGA 30th")
+	row := e.ok("POST", "/api/v1/purchases", purchase(pid, 30000, 1, 400, map[string]any{"date": "2026-09-20"}), 201)
+	id := row["id"].(string)
+	line := func(price, disc int) map[string]any {
+		return map[string]any{"productId": pid, "qty": 1, "price": price, "discount": disc}
+	}
+	// 400¥ off 3 items does not divide evenly: 134 + 133 + 133 adds up to the card charge exactly
+	e.ok("POST", "/api/v1/purchases/"+id+"/split", map[string]any{"lines": []any{line(10000, 133), line(10000, 133), line(10000, 133)}}, 422)
+	e.ok("POST", "/api/v1/purchases/"+id+"/split", map[string]any{"lines": []any{line(10000, 10001), line(10000, 0), line(10000, 0)}}, 422)
+	rows := e.ok("POST", "/api/v1/purchases/"+id+"/split", map[string]any{"lines": []any{line(10000, 134), line(10000, 133), line(10000, 133)}}, 200)["_"].([]any)
+	var sum int64
+	for i, r := range rows {
+		r := r.(map[string]any)
+		if num(r["price"]) != 10000 || num(r["discount"]) != []int64{134, 133, 133}[i] {
+			t.Fatalf("row %d: %v", i, r)
+		}
+		sum += num(r["total"])
+	}
+	if sum != 29600 {
+		t.Fatalf("total %v, want 29600", sum)
+	}
+}
