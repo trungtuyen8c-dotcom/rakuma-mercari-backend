@@ -567,3 +567,52 @@ func TestRakumaDismissHistoryAndRestore(t *testing.T) {
 		t.Fatalf("restore did not link: %v", b)
 	}
 }
+
+func TestRakumaTrackingFromChat(t *testing.T) {
+	e := setup(t)
+	pid := e.product("MEGA 30th")
+	msg := []any{map[string]any{"from": "seller", "at": "2026/10/13 17:49", "body": "本日ゆうパックにて発送いたしました。 追跡番号は194926646250です。"}}
+	shipped := map[string]any{"status": "商品の受取 (発送済み 10/13)", "seller": "magi", "messages": msg}
+	// A third order of the same seller already has a row with a number the owner typed
+	e.ok("POST", "/api/v1/purchases", purchase(pid, 1000, 1, 0, map[string]any{"link": "https://item.fril.jp/C3", "tracking": "111122223333"}), 201)
+
+	res := e.ok("POST", "/api/v1/rakuma/sync", map[string]any{"orders": []any{
+		rakumaOrder("C1", shipped), rakumaOrder("C2", shipped), rakumaOrder("C3", shipped),
+		rakumaOrder("C4", map[string]any{"status": "商品の受取", "messages": msg}), // not shipped yet: no number taken
+	}}, 200)
+	if num(res["trackingFromChat"]) != 3 || num(res["merged"]) != 2 || len(res["warnings"].([]any)) != 0 {
+		t.Fatalf("sync: %v", res)
+	}
+	rows := map[string]map[string]any{}
+	for _, p := range e.ok("GET", "/api/v1/purchases", nil, 200)["_"].([]any) {
+		rows[p.(map[string]any)["link"].(string)] = p.(map[string]any)
+	}
+	for _, no := range []string{"C1", "C2"} {
+		if r := rows["https://item.fril.jp/"+no]; r["tracking"] != "194926646250" || r["merged"] != true {
+			t.Fatalf("%s: %v", no, r)
+		}
+	}
+	if r := rows["https://item.fril.jp/C3"]; r["tracking"] != "111122223333" {
+		t.Fatalf("typed number replaced: %v", r)
+	}
+	if r := rows["https://item.fril.jp/C4"]; r["tracking"] != "" {
+		t.Fatalf("unshipped order got a number: %v", r)
+	}
+	for _, o := range e.ok("GET", "/api/v1/rakuma/orders", nil, 200)["_"].([]any) {
+		if o := o.(map[string]any); o["orderNo"] == "C1" && (o["trackingFromChat"] != true || o["carrier"] != "ゆうパック") {
+			t.Fatalf("order C1: %v", o)
+		}
+	}
+	// Re-syncing keeps the typed number; Rakuma showing a number itself clears the chat flag
+	e.ok("POST", "/api/v1/rakuma/sync", map[string]any{"orders": []any{rakumaOrder("C3", shipped), rakumaOrder("C1", map[string]any{"tracking": "194926646250"})}}, 200)
+	for _, p := range e.ok("GET", "/api/v1/purchases", nil, 200)["_"].([]any) {
+		if p := p.(map[string]any); p["link"] == "https://item.fril.jp/C3" && p["tracking"] != "111122223333" {
+			t.Fatalf("typed number replaced on re-sync: %v", p)
+		}
+	}
+	for _, o := range e.ok("GET", "/api/v1/rakuma/orders", nil, 200)["_"].([]any) {
+		if o := o.(map[string]any); o["orderNo"] == "C1" && o["trackingFromChat"] != false {
+			t.Fatalf("flag kept: %v", o)
+		}
+	}
+}

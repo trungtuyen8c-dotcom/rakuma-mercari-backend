@@ -42,10 +42,13 @@ type RakumaSyncResult struct {
 	Created     int `json:"created"`
 	Updated     int `json:"updated"`
 	TrackingSet int `json:"trackingSet"` // purchases whose tracking number was filled from Rakuma
-	DateSet     int `json:"dateSet"`     // purchases whose empty date was filled from Rakuma
-	Linked      int `json:"linked"`      // queued orders attached to a purchase row already entered with the same link
-	Purchased   int `json:"purchased"`   // purchase rows the sync wrote for paid orders whose link was not on any row
-	NewMessages int `json:"newMessages"`
+	// TrackingFromChat: shipped orders without らくまパック whose tracking number was read from the seller's message
+	TrackingFromChat int `json:"trackingFromChat"`
+	Merged           int `json:"merged"`    // purchase rows marked as one parcel because orders of one seller share a tracking number
+	DateSet          int `json:"dateSet"`   // purchases whose empty date was filled from Rakuma
+	Linked           int `json:"linked"`    // queued orders attached to a purchase row already entered with the same link
+	Purchased        int `json:"purchased"` // purchase rows the sync wrote for paid orders whose link was not on any row
+	NewMessages      int `json:"newMessages"`
 	// Warnings lists queued orders whose link or tracking number is already on a purchase row, and purchases whose
 	// newly copied tracking number repeats another row's (BR-05, BR-06).
 	Warnings []string `json:"warnings"`
@@ -149,6 +152,18 @@ func (s *Service) SyncRakuma(ctx context.Context, actor string, orders []RakumaO
 			if err != nil {
 				return err
 			}
+			if o.Tracking == "" && shippedStatus(o.Status) {
+				if t, carrier := trackingFromMessages(o.Messages); t != "" {
+					if err := repo.SetRakumaTrackingIfEmpty(ctx, tx, id, t, carrier); err != nil {
+						return err
+					}
+					if err := repo.Audit(ctx, tx, "rakuma_order", id, "tracking_from_chat", actor, nil, map[string]string{"tracking": t, "carrier": carrier}); err != nil {
+						return err
+					}
+					o.Tracking, o.TrackingFromChat = t, true
+					res.TrackingFromChat++
+				}
+			}
 			if o.PurchaseID == nil && !o.Dismissed {
 				linked, err := linkEnteredPurchase(ctx, tx, actor, &o)
 				if err != nil {
@@ -168,6 +183,14 @@ func (s *Service) SyncRakuma(ctx context.Context, actor string, orders []RakumaO
 					}
 					if made {
 						res.Purchased++
+						pid, _ := parseID(*o.PurchaseID)
+						row, err := repo.GetPurchase(ctx, tx, pid)
+						if err != nil {
+							return err
+						}
+						if err := shareParcel(ctx, tx, o, row, &res); err != nil {
+							return err
+						}
 					}
 					res.Warnings = append(res.Warnings, w...)
 				}
@@ -189,7 +212,8 @@ func (s *Service) SyncRakuma(ctx context.Context, actor string, orders []RakumaO
 			}
 			// The purchase date is filled only while the row has none, so a date the owner typed is never replaced
 			fillDate := before.Date == "" && o.Date != ""
-			setTracking := o.Tracking != "" && before.Tracking != o.Tracking
+			// A number read from the chat only fills an empty row; one the owner typed stays
+			setTracking := o.Tracking != "" && before.Tracking != o.Tracking && !(o.TrackingFromChat && before.Tracking != "")
 			if !fillDate && !setTracking {
 				continue
 			}
@@ -215,13 +239,8 @@ func (s *Service) SyncRakuma(ctx context.Context, actor string, orders []RakumaO
 				continue
 			}
 			res.TrackingSet++
-			same, err := repo.PurchasesByTracking(ctx, tx, o.Tracking)
-			if err != nil {
+			if err := shareParcel(ctx, tx, o, after, &res); err != nil {
 				return err
-			}
-			if same = without(same, pid); len(same) > 0 && !(after.Merged && allMerged(same)) {
-				res.Warnings = append(res.Warnings, fmt.Sprintf("Đơn %s: mã vận đơn %s vừa ghi vào dòng nhập số %d nhưng đã có ở dòng số %s.",
-					o.OrderNo, o.Tracking, after.STT, rowRefs(same)))
 			}
 		}
 		if listed != nil {
@@ -308,17 +327,41 @@ func (s *Service) purchaseFromRakuma(ctx context.Context, tx pgx.Tx, actor strin
 	}
 	sid := strconv.FormatInt(p.ID, 10)
 	o.PurchaseID = &sid
-	var w []string
-	if o.Tracking != "" {
-		same, err := repo.PurchasesByTracking(ctx, tx, o.Tracking)
-		if err != nil {
-			return false, nil, err
-		}
-		if same = without(same, p.ID); len(same) > 0 {
-			w = append(w, fmt.Sprintf("Đơn %s: mã vận đơn %s vừa ghi vào dòng nhập số %d nhưng đã có ở dòng số %s.", o.OrderNo, o.Tracking, p.STT, rowRefs(same)))
-		}
+	return true, nil, nil
+}
+
+// shareParcel runs after a tracking number lands on a purchase row. When other rows carry the same number and all of
+// them belong to Rakuma orders of the same seller, the rows are one parcel and get one merge group; otherwise the
+// owner is warned of the duplicate (BR-06).
+func shareParcel(ctx context.Context, tx pgx.Tx, o models.RakumaOrder, row models.Purchase, res *RakumaSyncResult) error {
+	if o.Tracking == "" {
+		return nil
 	}
-	return true, w, nil
+	same, err := repo.PurchasesByTracking(ctx, tx, o.Tracking)
+	if err != nil {
+		return err
+	}
+	if same = without(same, row.ID); len(same) == 0 || row.Merged && allMerged(same) {
+		return nil
+	}
+	oneParcel, err := sameSellerRows(ctx, tx, o.Seller, same)
+	if err != nil {
+		return err
+	}
+	if !oneParcel {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("Đơn %s: mã vận đơn %s vừa ghi vào dòng nhập số %d nhưng đã có ở dòng số %s.",
+			o.OrderNo, o.Tracking, row.STT, rowRefs(same)))
+		return nil
+	}
+	ids := []int64{row.ID}
+	for _, r := range same {
+		ids = append(ids, r.ID)
+	}
+	if err := repo.SetPurchasesMerged(ctx, tx, ids, o.Tracking); err != nil {
+		return err
+	}
+	res.Merged += len(ids)
+	return nil
 }
 
 // queuedDuplicates warns when an order still waiting for approval is already on a purchase row, e.g. entered by hand.
@@ -609,4 +652,18 @@ func (s *Service) SkipRakumaReply(ctx context.Context, actor string, replyID int
 		}
 		return repo.SetRakumaChatOpen(ctx, tx, orderID, false)
 	})
+}
+
+// sameSellerRows reports whether every row is linked to a Rakuma order of this seller.
+func sameSellerRows(ctx context.Context, tx pgx.Tx, seller string, rows []models.Purchase) (bool, error) {
+	if seller == "" {
+		return false, nil
+	}
+	for _, r := range rows {
+		s, err := repo.RakumaSellerOfPurchase(ctx, tx, r.ID)
+		if err != nil || s != seller {
+			return false, err
+		}
+	}
+	return true, nil
 }
