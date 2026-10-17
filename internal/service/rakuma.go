@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -40,6 +41,9 @@ type RakumaOrderInput struct {
 	// Omitted keeps the stored choice; the purchase row written later uses it.
 	ProductID *string `json:"productId"`
 	Qty       Flex    `json:"qty"`
+	// Lines: a combined order split by the owner, one per product with per-item price and coupon share, adding up to
+	// the order price minus its coupon. Omitted keeps; [] clears.
+	Lines *[]models.PlanLine `json:"lines"`
 }
 
 type RakumaSyncResult struct {
@@ -119,6 +123,28 @@ func validRakumaOrder(in RakumaOrderInput) (repo.RakumaRow, map[string]string) {
 			r.PlanQty = int(q)
 		}
 	}
+	if in.Lines != nil {
+		r.PlanLinesSet = true
+		if lines := *in.Lines; len(lines) > 0 {
+			var sum int64
+			for i, l := range lines {
+				if _, ok := parseID(l.ProductID); !ok {
+					e[fmt.Sprintf("lines.%d.productId", i)] = "Chọn sản phẩm có trong danh mục."
+				}
+				if l.Qty < 1 || l.Qty > 99 || l.Price <= 0 || l.Discount < 0 || l.Discount > l.Price {
+					e[fmt.Sprintf("lines.%d", i)] = "Số lượng 1 đến 99, giá lớn hơn 0, giảm giá từ 0 đến giá."
+				}
+				sum += l.Qty * (l.Price - l.Discount)
+			}
+			if len(lines) < 2 {
+				e["lines"] = "Đơn gộp cần ít nhất 2 món; một món thì chọn sản phẩm và số lượng."
+			} else if price > 0 && sum != price-r.Discount {
+				e["lines"] = fmt.Sprintf("Các món cộng lại %s¥, phải bằng giá link sau coupon %s¥.", money(sum), money(price-r.Discount))
+			}
+			b, _ := json.Marshal(lines)
+			r.PlanLines = string(b)
+		}
+	}
 	for _, m := range in.Messages {
 		if m.From != "seller" && m.From != "buyer" {
 			e["messages"] = "Người gửi phải là seller hoặc buyer."
@@ -154,6 +180,14 @@ func (s *Service) SyncRakuma(ctx context.Context, actor string, orders []RakumaO
 			if r.PlanProduct != 0 {
 				if _, err := repo.GetProduct(ctx, tx, r.PlanProduct); err != nil {
 					return &ValidationError{Fields: map[string]string{fmt.Sprintf("orders.%d.productId", i): "Chọn sản phẩm có trong danh mục."}}
+				}
+			}
+			if r.PlanLinesSet && orders[i].Lines != nil {
+				for j, l := range *orders[i].Lines {
+					pid, _ := parseID(l.ProductID)
+					if _, err := repo.GetProduct(ctx, tx, pid); err != nil {
+						return &ValidationError{Fields: map[string]string{fmt.Sprintf("orders.%d.lines.%d.productId", i, j): "Chọn sản phẩm có trong danh mục."}}
+					}
 				}
 			}
 			id, created, err := repo.UpsertRakumaOrder(ctx, tx, r)
@@ -333,6 +367,12 @@ func (s *Service) purchaseFromRakuma(ctx context.Context, tx pgx.Tx, actor strin
 	} else if p, ok := guessProduct(o.Title, products); ok {
 		productID = p.ID
 	}
+	// A combined order split by the owner: one lump row, split below into the owner's lines
+	split := len(o.PlanLines) >= 2
+	if split {
+		productID, _ = parseID(o.PlanLines[0].ProductID)
+		q = 1
+	}
 	// One row of q items when the price and coupon divide evenly; otherwise one row at the order price, split below
 	even := o.Price%q == 0 && o.Discount%q == 0
 	qty, price, disc := int64(1), o.Price, o.Discount
@@ -369,7 +409,20 @@ func (s *Service) purchaseFromRakuma(ctx context.Context, tx pgx.Tx, actor strin
 	}
 	sid := strconv.FormatInt(p.ID, 10)
 	o.PurchaseID = &sid
-	if !even && q > 1 && productID != 0 {
+	if split {
+		lines := make([]SplitLine, len(o.PlanLines))
+		for i, l := range o.PlanLines {
+			lines[i] = SplitLine{ProductID: l.ProductID, Qty: Flex(strconv.FormatInt(l.Qty, 10)), Price: Flex(strconv.FormatInt(l.Price, 10)),
+				Discount: Flex(strconv.FormatInt(l.Discount, 10))}
+		}
+		_, err := s.splitPurchase(ctx, tx, actor, p.ID, lines)
+		if errors.As(err, &ve) {
+			return true, []string{fmt.Sprintf("Đơn %s: chưa tách được theo các món đã chọn (%s); dòng nhập giữ giá cả đơn, bấm Tách ở Nhập hàng.", o.OrderNo, firstMsg(ve))}, nil
+		}
+		if err != nil {
+			return false, nil, err
+		}
+	} else if !even && q > 1 && productID != 0 {
 		// q items whose price or coupon does not divide by q: q-1 items at the rounded-down unit figures and one item
 		// taking the remainder, as two merged rows, so they add up to what the link cost exactly
 		up, ud := o.Price/q, o.Discount/q
@@ -386,6 +439,13 @@ func (s *Service) purchaseFromRakuma(ctx context.Context, tx pgx.Tx, actor strin
 		}
 	}
 	return true, nil, nil
+}
+
+func firstMsg(ve *ValidationError) string {
+	for _, m := range ve.Fields {
+		return m
+	}
+	return ""
 }
 
 func deref(s *string) string {

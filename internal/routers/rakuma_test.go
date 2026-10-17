@@ -702,3 +702,51 @@ func TestRakumaPreviewPlan(t *testing.T) {
 		t.Fatalf("cleared: %v", o)
 	}
 }
+
+func TestRakumaPreviewPlanLines(t *testing.T) {
+	e := setup(t)
+	mega := e.product("MEGA 30th")
+	storm := e.product("Storm Emerald")
+	ln := func(pid string, qty, price, disc int) map[string]any {
+		return map[string]any{"productId": pid, "qty": qty, "price": price, "discount": disc}
+	}
+	base := map[string]any{"title": "まとめ売り 3点", "price": 19400, "discount": 400, "status": "支払い (期限 10/19 23:59)"}
+	with := func(extra map[string]any) map[string]any {
+		m := map[string]any{}
+		for k, v := range base {
+			m[k] = v
+		}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return rakumaOrder("L1", m)
+	}
+	// Lines must add up to the link after its coupon (19,400 - 400 = 19,000) and be at least two
+	e.ok("POST", "/api/v1/rakuma/sync", map[string]any{"orders": []any{with(map[string]any{"lines": []any{ln(mega, 2, 5000, 100), ln(storm, 1, 9400, 0)}})}}, 422)
+	e.ok("POST", "/api/v1/rakuma/sync", map[string]any{"orders": []any{with(map[string]any{"lines": []any{ln(mega, 1, 19400, 400)}})}}, 422)
+	e.sync("", with(map[string]any{"lines": []any{ln(mega, 2, 5000, 100), ln(storm, 1, 9400, 200)}}))
+	o := e.ok("GET", "/api/v1/rakuma/orders", nil, 200)["_"].([]any)[0].(map[string]any)
+	if len(o["planLines"].([]any)) != 2 || o["purchaseId"] != nil {
+		t.Fatalf("stored lines: %v", o)
+	}
+	// Paid later (no lines sent): written as the owner's merged rows, total = what the link cost
+	delete(base, "status")
+	e.sync("", rakumaOrder("L1", base))
+	byProduct := map[any]map[string]any{}
+	var total int64
+	for _, p := range e.ok("GET", "/api/v1/purchases", nil, 200)["_"].([]any) {
+		p := p.(map[string]any)
+		byProduct[p["productId"]] = p
+		total += num(p["total"])
+	}
+	m, s := byProduct[mega], byProduct[storm]
+	if total != 19000 || num(m["qty"]) != 2 || num(m["discount"]) != 100 || m["link"] != "https://item.fril.jp/L1" ||
+		num(s["qty"]) != 1 || num(s["discount"]) != 200 || s["link"] != "" || m["merged"] != true || s["merged"] != true {
+		t.Fatalf("rows: %v / %v (total %d)", m, s, total)
+	}
+	// [] clears the lines
+	e.sync("", rakumaOrder("L1", map[string]any{"lines": []any{}}))
+	if o := e.ok("GET", "/api/v1/rakuma/orders", nil, 200)["_"].([]any)[0].(map[string]any); len(o["planLines"].([]any)) != 0 {
+		t.Fatalf("cleared: %v", o)
+	}
+}

@@ -262,10 +262,11 @@ type RakumaOrder struct {
 	// TrackingFromChat: the tracking number was read from the seller's message (shipped without らくまパック)
 	TrackingFromChat bool `json:"trackingFromChat"`
 	// The owner's choice from the extension preview ("" / 0 = none), and what the linked purchase row holds now
-	PlanProductID   string `json:"planProductId"`
-	PlanQty         int    `json:"planQty"`
-	PurchaseProduct string `json:"purchaseProduct"`
-	PurchaseQty     int    `json:"purchaseQty"`
+	PlanLines       []PlanLine `json:"planLines"` // a combined order split by the owner in the preview; empty = none
+	PlanProductID   string     `json:"planProductId"`
+	PlanQty         int        `json:"planQty"`
+	PurchaseProduct string     `json:"purchaseProduct"`
+	PurchaseQty     int        `json:"purchaseQty"`
 }
 
 type RakumaReply struct {
@@ -277,4 +278,12 @@ type RakumaReply struct {
 	Reason    string `json:"reason"` // why it was skipped
 	CreatedAt string `json:"createdAt"`
 	SentAt    string `json:"sentAt"`
+}
+
+// PlanLine is one product of a combined order as the owner split it in the extension preview (per-item figures).
+type PlanLine struct {
+	ProductID string `json:"productId"`
+	Qty       int64  `json:"qty"`
+	Price     int64  `json:"price"`
+	Discount  int64  `json:"discount"`
 }
