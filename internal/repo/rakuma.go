@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/jackc/pgx/v5"
 
@@ -18,17 +19,21 @@ SELECT o.id, o.order_no, o.item_url, o.title, o.image_url, o.status, COALESCE(to
        COALESCE(to_char(o.missing_since AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI'), ''),
        COALESCE(to_char(o.dismissed_at AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI'), ''), o.dismissed_by, o.dismiss_kind, o.dismiss_reason,
        o.tracking_from_chat, COALESCE(o.plan_product_id::text, ''), COALESCE(o.plan_qty, 0),
-       COALESCE(pp.name, ''), COALESCE(pu.quantity, 0)
+       COALESCE(pp.name, ''), COALESCE(pu.quantity, 0), COALESCE(o.plan_lines::text, '[]')
 FROM rakuma_orders o
 LEFT JOIN purchases pu ON pu.id = o.purchase_id
 LEFT JOIN products pp ON pp.id = pu.product_id`
 
 func scanRakuma(row pgx.Row) (models.RakumaOrder, error) {
 	var o models.RakumaOrder
+	var lines string
 	err := row.Scan(&o.ID, &o.OrderNo, &o.Link, &o.Title, &o.Image, &o.Status, &o.Date, &o.Price, &o.Discount, &o.Carrier,
 		&o.Tracking, &o.Seller, &o.Summary, &o.ReplyDraft, &o.Rating, &o.IssueNote, &o.PurchaseID, &o.Dismissed, &o.ChatOpen, &o.NewMessages, &o.SyncedAt, &o.MissingSince,
 		&o.DismissedAt, &o.DismissedBy, &o.DismissKind, &o.DismissReason, &o.TrackingFromChat,
-		&o.PlanProductID, &o.PlanQty, &o.PurchaseProduct, &o.PurchaseQty)
+		&o.PlanProductID, &o.PlanQty, &o.PurchaseProduct, &o.PurchaseQty, &lines)
+	if err == nil {
+		err = json.Unmarshal([]byte(lines), &o.PlanLines)
+	}
 	return o, err
 }
 
@@ -149,6 +154,9 @@ type RakumaRow struct {
 	PlanSet     bool
 	PlanProduct int64
 	PlanQty     int
+	// PlanLinesSet: the owner split a combined order in the preview; PlanLines is its JSON ("" clears it)
+	PlanLinesSet bool
+	PlanLines    string
 }
 
 // UpsertRakumaOrder inserts or refreshes an order by order_no. Empty date, tracking, summary and draft never erase
@@ -156,8 +164,9 @@ type RakumaRow struct {
 func UpsertRakumaOrder(ctx context.Context, db DB, r RakumaRow) (id int64, created bool, err error) {
 	err = db.QueryRow(ctx, `
 		INSERT INTO rakuma_orders (order_no, item_url, title, status, order_date, price, discount, carrier, tracking_no,
-		                           seller, summary, reply_draft, image_url, is_chat_open, plan_product_id, plan_qty)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, COALESCE($14, TRUE), NULLIF($16, 0), NULLIF($17, 0))
+		                           seller, summary, reply_draft, image_url, is_chat_open, plan_product_id, plan_qty, plan_lines)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, COALESCE($14, TRUE), NULLIF($16, 0), NULLIF($17, 0),
+		        CASE WHEN $18 THEN NULLIF($19, '')::jsonb END)
 		ON CONFLICT (order_no) DO UPDATE SET
 			item_url    = EXCLUDED.item_url,
 			title       = CASE WHEN EXCLUDED.title = '' THEN rakuma_orders.title ELSE EXCLUDED.title END,
@@ -175,12 +184,13 @@ func UpsertRakumaOrder(ctx context.Context, db DB, r RakumaRow) (id int64, creat
 			is_chat_open = COALESCE($14, rakuma_orders.is_chat_open),
 			plan_product_id = CASE WHEN $15 THEN NULLIF($16, 0) ELSE rakuma_orders.plan_product_id END,
 			plan_qty    = CASE WHEN $15 THEN NULLIF($17, 0) ELSE rakuma_orders.plan_qty END,
+			plan_lines  = CASE WHEN $18 THEN NULLIF($19, '')::jsonb ELSE rakuma_orders.plan_lines END,
 			synced_at   = now(),
 			missing_since = NULL,
 			updated_at  = now()
 		RETURNING id, xmax = 0`,
 		r.OrderNo, r.Link, r.Title, r.Status, r.Date, r.Price, r.Discount, r.Carrier, r.Tracking, r.Seller, r.Summary,
-		r.ReplyDraft, r.Image, r.ChatOpen, r.PlanSet, r.PlanProduct, r.PlanQty).Scan(&id, &created)
+		r.ReplyDraft, r.Image, r.ChatOpen, r.PlanSet, r.PlanProduct, r.PlanQty, r.PlanLinesSet, r.PlanLines).Scan(&id, &created)
 	return
 }
 
