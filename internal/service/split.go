@@ -25,6 +25,16 @@ type SplitLine struct {
 func (s *Service) SplitPurchase(ctx context.Context, actor string, id int64, lines []SplitLine) ([]models.Purchase, error) {
 	var out []models.Purchase
 	err := s.tx(ctx, func(tx pgx.Tx) error {
+		var err error
+		out, err = s.splitPurchase(ctx, tx, actor, id, lines)
+		return err
+	})
+	return out, err
+}
+
+func (s *Service) splitPurchase(ctx context.Context, tx pgx.Tx, actor string, id int64, lines []SplitLine) ([]models.Purchase, error) {
+	var out []models.Purchase
+	err := func() error {
 		before, err := repo.GetPurchase(ctx, tx, id)
 		if err != nil {
 			return notFound(err)
@@ -112,7 +122,7 @@ func (s *Service) SplitPurchase(ctx context.Context, actor string, id int64, lin
 			out = append(out, p)
 		}
 		return nil
-	})
+	}()
 	return out, err
 }
 
