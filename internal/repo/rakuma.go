@@ -17,14 +17,18 @@ SELECT o.id, o.order_no, o.item_url, o.title, o.image_url, o.status, COALESCE(to
        to_char(o.synced_at AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI'),
        COALESCE(to_char(o.missing_since AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI'), ''),
        COALESCE(to_char(o.dismissed_at AT TIME ZONE 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI'), ''), o.dismissed_by, o.dismiss_kind, o.dismiss_reason,
-       o.tracking_from_chat
-FROM rakuma_orders o`
+       o.tracking_from_chat, COALESCE(o.plan_product_id::text, ''), COALESCE(o.plan_qty, 0),
+       COALESCE(pp.name, ''), COALESCE(pu.quantity, 0)
+FROM rakuma_orders o
+LEFT JOIN purchases pu ON pu.id = o.purchase_id
+LEFT JOIN products pp ON pp.id = pu.product_id`
 
 func scanRakuma(row pgx.Row) (models.RakumaOrder, error) {
 	var o models.RakumaOrder
 	err := row.Scan(&o.ID, &o.OrderNo, &o.Link, &o.Title, &o.Image, &o.Status, &o.Date, &o.Price, &o.Discount, &o.Carrier,
 		&o.Tracking, &o.Seller, &o.Summary, &o.ReplyDraft, &o.Rating, &o.IssueNote, &o.PurchaseID, &o.Dismissed, &o.ChatOpen, &o.NewMessages, &o.SyncedAt, &o.MissingSince,
-		&o.DismissedAt, &o.DismissedBy, &o.DismissKind, &o.DismissReason, &o.TrackingFromChat)
+		&o.DismissedAt, &o.DismissedBy, &o.DismissKind, &o.DismissReason, &o.TrackingFromChat,
+		&o.PlanProductID, &o.PlanQty, &o.PurchaseProduct, &o.PurchaseQty)
 	return o, err
 }
 
@@ -141,6 +145,10 @@ type RakumaRow struct {
 	Summary    string
 	ReplyDraft string
 	ChatOpen   *bool
+	// PlanSet: the owner chose product / qty in the preview; PlanProduct 0 and PlanQty 0 mean "none"
+	PlanSet     bool
+	PlanProduct int64
+	PlanQty     int
 }
 
 // UpsertRakumaOrder inserts or refreshes an order by order_no. Empty date, tracking, summary and draft never erase
@@ -148,8 +156,8 @@ type RakumaRow struct {
 func UpsertRakumaOrder(ctx context.Context, db DB, r RakumaRow) (id int64, created bool, err error) {
 	err = db.QueryRow(ctx, `
 		INSERT INTO rakuma_orders (order_no, item_url, title, status, order_date, price, discount, carrier, tracking_no,
-		                           seller, summary, reply_draft, image_url, is_chat_open)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, COALESCE($14, TRUE))
+		                           seller, summary, reply_draft, image_url, is_chat_open, plan_product_id, plan_qty)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, COALESCE($14, TRUE), NULLIF($16, 0), NULLIF($17, 0))
 		ON CONFLICT (order_no) DO UPDATE SET
 			item_url    = EXCLUDED.item_url,
 			title       = CASE WHEN EXCLUDED.title = '' THEN rakuma_orders.title ELSE EXCLUDED.title END,
@@ -165,12 +173,14 @@ func UpsertRakumaOrder(ctx context.Context, db DB, r RakumaRow) (id int64, creat
 			summary     = CASE WHEN EXCLUDED.summary = '' THEN rakuma_orders.summary ELSE EXCLUDED.summary END,
 			reply_draft = CASE WHEN EXCLUDED.reply_draft = '' THEN rakuma_orders.reply_draft ELSE EXCLUDED.reply_draft END,
 			is_chat_open = COALESCE($14, rakuma_orders.is_chat_open),
+			plan_product_id = CASE WHEN $15 THEN NULLIF($16, 0) ELSE rakuma_orders.plan_product_id END,
+			plan_qty    = CASE WHEN $15 THEN NULLIF($17, 0) ELSE rakuma_orders.plan_qty END,
 			synced_at   = now(),
 			missing_since = NULL,
 			updated_at  = now()
 		RETURNING id, xmax = 0`,
 		r.OrderNo, r.Link, r.Title, r.Status, r.Date, r.Price, r.Discount, r.Carrier, r.Tracking, r.Seller, r.Summary,
-		r.ReplyDraft, r.Image, r.ChatOpen).Scan(&id, &created)
+		r.ReplyDraft, r.Image, r.ChatOpen, r.PlanSet, r.PlanProduct, r.PlanQty).Scan(&id, &created)
 	return
 }
 

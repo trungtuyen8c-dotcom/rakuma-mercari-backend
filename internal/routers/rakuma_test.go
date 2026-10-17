@@ -641,3 +641,64 @@ func TestSplitSpreadsOrderDiscount(t *testing.T) {
 		t.Fatalf("total %v, want 29600", sum)
 	}
 }
+
+func TestRakumaPreviewPlan(t *testing.T) {
+	e := setup(t)
+	mega := e.product("MEGA 30th")
+	storm := e.product("Storm Emerald")
+	order := func(no string) map[string]any {
+		for _, o := range e.ok("GET", "/api/v1/rakuma/orders", nil, 200)["_"].([]any) {
+			if o := o.(map[string]any); o["orderNo"] == no {
+				return o
+			}
+		}
+		t.Fatalf("order %s not found", no)
+		return nil
+	}
+
+	// The owner picks product and qty in the preview while the order is unpaid: stored, shown again, kept when omitted
+	e.ok("POST", "/api/v1/rakuma/sync", map[string]any{"orders": []any{rakumaOrder("P1", map[string]any{"status": "支払い (期限 10/19 23:59)", "productId": "999"})}}, 422)
+	e.sync("", rakumaOrder("P1", map[string]any{"status": "支払い (期限 10/19 23:59)", "title": "MEGA 30th 2BOX", "price": 49999, "discount": 0, "productId": storm, "qty": 2}))
+	if o := order("P1"); o["planProductId"] != storm || num(o["planQty"]) != 2 || o["purchaseId"] != nil {
+		t.Fatalf("plan: %v", o)
+	}
+	// Paid on the next scan, which sends no choice: the row uses the stored one; 49,999 over 2 items splits exactly
+	e.sync("", rakumaOrder("P1", map[string]any{"title": "MEGA 30th 2BOX", "price": 49999, "discount": 0}))
+	o := order("P1")
+	if o["planProductId"] != storm || o["purchaseProduct"] != "Storm Emerald" || num(o["purchaseQty"]) != 1 {
+		t.Fatalf("after paid: %v", o)
+	}
+	var total, items int64
+	for _, p := range e.ok("GET", "/api/v1/purchases", nil, 200)["_"].([]any) {
+		p := p.(map[string]any)
+		if p["productId"] == storm {
+			total += num(p["total"])
+			items += num(p["qty"])
+			if p["merged"] != true {
+				t.Fatalf("split rows not merged: %v", p)
+			}
+		}
+	}
+	if total != 49999 || items != 2 {
+		t.Fatalf("uneven split: total %d items %d", total, items)
+	}
+
+	// A coupon that does not divide: 30,000 - 400 over 3 items adds up to 29,600 exactly
+	e.sync("", rakumaOrder("P2", map[string]any{"title": "MEGA 30th", "price": 30000, "discount": 400, "productId": mega, "qty": 3}))
+	total, items = 0, 0
+	for _, p := range e.ok("GET", "/api/v1/purchases", nil, 200)["_"].([]any) {
+		p := p.(map[string]any)
+		if p["productId"] == mega {
+			total += num(p["total"])
+			items += num(p["qty"])
+		}
+	}
+	if total != 29600 || items != 3 {
+		t.Fatalf("coupon split: total %d items %d", total, items)
+	}
+	// "" clears the choice
+	e.sync("", rakumaOrder("P2", map[string]any{"productId": "", "qty": ""}))
+	if o := order("P2"); o["planProductId"] != "" {
+		t.Fatalf("cleared: %v", o)
+	}
+}

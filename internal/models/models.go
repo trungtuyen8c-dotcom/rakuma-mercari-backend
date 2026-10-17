@@ -261,6 +261,11 @@ type RakumaOrder struct {
 	DismissReason string `json:"dismissReason"`
 	// TrackingFromChat: the tracking number was read from the seller's message (shipped without らくまパック)
 	TrackingFromChat bool `json:"trackingFromChat"`
+	// The owner's choice from the extension preview ("" / 0 = none), and what the linked purchase row holds now
+	PlanProductID   string `json:"planProductId"`
+	PlanQty         int    `json:"planQty"`
+	PurchaseProduct string `json:"purchaseProduct"`
+	PurchaseQty     int    `json:"purchaseQty"`
 }
 
 type RakumaReply struct {

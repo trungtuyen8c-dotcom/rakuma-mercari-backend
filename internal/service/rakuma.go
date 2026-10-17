@@ -36,6 +36,10 @@ type RakumaOrderInput struct {
 	ReplyDraft string               `json:"replyDraft"`
 	ChatOpen   *bool                `json:"chatOpen"` // omitted = keep; false once Rakuma hides the chat
 	Messages   []RakumaMessageInput `json:"messages"`
+	// The owner's choice in the extension preview: product id ("" = none, let the sync guess) and number of items.
+	// Omitted keeps the stored choice; the purchase row written later uses it.
+	ProductID *string `json:"productId"`
+	Qty       Flex    `json:"qty"`
 }
 
 type RakumaSyncResult struct {
@@ -98,6 +102,23 @@ func validRakumaOrder(in RakumaOrderInput) (repo.RakumaRow, map[string]string) {
 		}
 		r.Tracking = &t
 	}
+	if in.ProductID != nil || !in.Qty.empty() {
+		r.PlanSet = true
+		if v := strings.TrimSpace(deref(in.ProductID)); v != "" && v != "0" {
+			id, ok := parseID(v)
+			if !ok {
+				e["productId"] = "Chọn sản phẩm có trong danh mục."
+			}
+			r.PlanProduct = id
+		}
+		if !in.Qty.empty() {
+			q, ok := in.Qty.int()
+			if !ok || q < 1 || q > 99 {
+				e["qty"] = "Số lượng phải từ 1 đến 99."
+			}
+			r.PlanQty = int(q)
+		}
+	}
 	for _, m := range in.Messages {
 		if m.From != "seller" && m.From != "buyer" {
 			e["messages"] = "Người gửi phải là seller hoặc buyer."
@@ -130,6 +151,11 @@ func (s *Service) SyncRakuma(ctx context.Context, actor string, orders []RakumaO
 	err := s.tx(ctx, func(tx pgx.Tx) error {
 		var products []models.Product
 		for i, r := range rows {
+			if r.PlanProduct != 0 {
+				if _, err := repo.GetProduct(ctx, tx, r.PlanProduct); err != nil {
+					return &ValidationError{Fields: map[string]string{fmt.Sprintf("orders.%d.productId", i): "Chọn sản phẩm có trong danh mục."}}
+				}
+			}
 			id, created, err := repo.UpsertRakumaOrder(ctx, tx, r)
 			if err != nil {
 				return err
@@ -293,16 +319,32 @@ func (s *Service) purchaseFromRakuma(ctx context.Context, tx pgx.Tx, actor strin
 	if same, err := repo.PurchasesByLink(ctx, tx, o.Link); err != nil || len(same) > 0 {
 		return false, nil, err
 	}
+	// The owner's choice from the extension preview wins over the guess from the title
+	q := int64(o.PlanQty)
+	if q == 0 {
+		q = int64(guessQty(o.Title))
+	}
+	if q < 1 {
+		q = 1
+	}
+	var productID int64
+	if o.PlanProductID != "" {
+		productID, _ = parseID(o.PlanProductID)
+	} else if p, ok := guessProduct(o.Title, products); ok {
+		productID = p.ID
+	}
+	// One row of q items when the price and coupon divide evenly; otherwise one row at the order price, split below
+	even := o.Price%q == 0 && o.Discount%q == 0
 	qty, price, disc := int64(1), o.Price, o.Discount
-	if q := int64(guessQty(o.Title)); q > 1 && price%q == 0 && disc%q == 0 {
-		qty, price, disc = q, price/q, disc/q
+	if even {
+		qty, price, disc = q, o.Price/q, o.Discount/q
 	}
 	in := PurchaseInput{
 		Date: o.Date, Link: o.Link, Tracking: o.Tracking, noProduct: true,
 		Price: Flex(strconv.FormatInt(price, 10)), Qty: Flex(strconv.FormatInt(qty, 10)), Discount: Flex(strconv.FormatInt(disc, 10)),
 	}
-	if p, ok := guessProduct(o.Title, products); ok {
-		in.ProductID = strconv.FormatInt(p.ID, 10)
+	if productID != 0 {
+		in.ProductID = strconv.FormatInt(productID, 10)
 	}
 	if c, ok, err := repo.DefaultCard(ctx, tx); err != nil {
 		return false, nil, err
@@ -327,7 +369,30 @@ func (s *Service) purchaseFromRakuma(ctx context.Context, tx pgx.Tx, actor strin
 	}
 	sid := strconv.FormatInt(p.ID, 10)
 	o.PurchaseID = &sid
+	if !even && q > 1 && productID != 0 {
+		// q items whose price or coupon does not divide by q: q-1 items at the rounded-down unit figures and one item
+		// taking the remainder, as two merged rows, so they add up to what the link cost exactly
+		up, ud := o.Price/q, o.Discount/q
+		pid := strconv.FormatInt(productID, 10)
+		line := func(n, pr, d int64) SplitLine {
+			return SplitLine{ProductID: pid, Qty: Flex(strconv.FormatInt(n, 10)), Price: Flex(strconv.FormatInt(pr, 10)), Discount: Flex(strconv.FormatInt(d, 10))}
+		}
+		_, err := s.splitPurchase(ctx, tx, actor, p.ID, []SplitLine{line(q-1, up, ud), line(1, o.Price-(q-1)*up, o.Discount-(q-1)*ud)})
+		if errors.As(err, &ve) { // checked before any write: the row stays one lump for the owner to split
+			return true, []string{fmt.Sprintf("Đơn %s: chưa chia được %d món, dòng nhập giữ giá cả đơn; bấm Tách ở Nhập hàng.", o.OrderNo, q)}, nil
+		}
+		if err != nil {
+			return false, nil, err
+		}
+	}
 	return true, nil, nil
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // shareParcel runs after a tracking number lands on a purchase row. When other rows carry the same number and all of
